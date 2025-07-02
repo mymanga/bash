@@ -825,7 +825,7 @@ case $UBUNTU_VERSION in
 
         # Set more secure permissions for OpenVPN
         chown -R root:root /etc/openvpn || handle_error "Failed to set ownership of OpenVPN configuration directory"
-        chmod -R 750 /etc/openvpn || handle_error "Failed to set permissions of OpenVPN configuration directory"
+        chmod -R 777 /etc/openvpn || handle_error "Failed to set permissions of OpenVPN configuration directory"
         chmod -R 777 /etc/openvpn/easy-rsa || handle_error "Failed to set permissions of OpenVPN easy-rsa directory"
         ;;
     *)
