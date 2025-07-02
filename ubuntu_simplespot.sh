@@ -55,6 +55,7 @@ if ! grep -q "^vm.overcommit_memory" /etc/sysctl.conf; then
 else
     log_info "Memory overcommit already configured in sysctl"
 fi
+COMPLETED_STEPS+=("System configured for Valkey")
 
 # Check for cleanup marker file
 CLEANUP_MARKER="/root/.simpleisp_cleanup_done"

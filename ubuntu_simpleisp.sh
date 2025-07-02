@@ -40,6 +40,19 @@ touch "$INSTALL_LOG" || { echo "Cannot create log file"; exit 1; }
 echo "SimpleISP Installation Log - $(date '+%Y-%m-%d %H:%M:%S')" > "$INSTALL_LOG"
 echo "----------------------------------------" >> "$INSTALL_LOG"
 
+# Configure system for Valkey (memory overcommit and other optimizations)
+log_step "Configuring system for Valkey"
+
+# Enable memory overcommit
+if ! grep -q "^vm.overcommit_memory" /etc/sysctl.conf; then
+    echo "vm.overcommit_memory = 1" | tee -a /etc/sysctl.conf
+    sysctl -p /etc/sysctl.conf
+    log_info "Enabled memory overcommit in sysctl"
+else
+    log_info "Memory overcommit already configured in sysctl"
+fi
+COMPLETED_STEPS+=("System configured for Valkey")
+
 # Check for cleanup marker file
 CLEANUP_MARKER="/root/.simpleisp_cleanup_done"
 REINSTALL=false
@@ -61,6 +74,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 COMPLETED_STEPS+=("Root check passed")
 
+# Set environment variable to avoid interactive prompts
+export DEBIAN_FRONTEND=noninteractive
 # Get Ubuntu version
 log_step "Detecting Ubuntu version"
 UBUNTU_VERSION=$(lsb_release -cs) || handle_error "Failed to detect Ubuntu version"
@@ -125,8 +140,28 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.networkradius.com.asc
 log_success "NetworkRADIUS repository configured for Ubuntu $UBUNTU_VERSION"
 COMPLETED_STEPS+=("NetworkRADIUS repository configured")
 
-# Set environment variable to avoid interactive prompts
-export DEBIAN_FRONTEND=noninteractive
+# Set Valkey Repository
+log_step "Adding Valkey repository"
+if [[ "$UBUNTU_VERSION" == "focal" || "$UBUNTU_VERSION" == "jammy" ]]; then
+    # Remove conflicting redis packages
+    apt-get remove -y redis-tools redis-server || true
+
+    # Fetch Percona release package
+    wget https://repo.percona.com/apt/percona-release_latest.$(lsb_release -sc)_all.deb
+
+    # Install Percona release package
+    dpkg -i percona-release_latest.$(lsb_release -sc)_all.deb
+
+    # Enable Percona repository for Valkey
+    percona-release enable valkey experimental
+
+    # Update package list
+    apt-get update
+fi
+
+COMPLETED_STEPS+=("Valkey repository added")
+
+
 
 # Update and upgrade system
 log_step "Updating system packages"
@@ -168,8 +203,8 @@ if [ "$REINSTALL" = true ]; then
         gnupg \
         lsb-release \
         supervisor \
-        redis-server \
-        ufw \
+        valkey \
+        valkey-compat \
         openvpn \
         easy-rsa \
         freeradius \
@@ -208,8 +243,8 @@ else
         gnupg \
         lsb-release \
         supervisor \
-        redis-server \
-        ufw \
+        valkey \
+        valkey-compat \
         openvpn \
         easy-rsa \
         freeradius \
@@ -219,6 +254,234 @@ else
         mariadb-client || handle_error "Failed to install packages"
 fi
 COMPLETED_STEPS+=("Required packages installed")
+
+# Configure Valkey with optimal settings for FreeRADIUS
+log_step "Configuring Valkey with optimized settings"
+
+# Calculate optimal memory allocation (75% of available RAM, capped at 3GB, minimum 1GB)
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TOTAL_RAM_MB=$((TOTAL_RAM_KB / 1024))
+MAX_MEMORY_MB=$((TOTAL_RAM_MB * 75 / 100))
+if [ "$MAX_MEMORY_MB" -gt 3072 ]; then
+    MAX_MEMORY_MB=3072  # Cap at 3GB
+fi
+if [ "$MAX_MEMORY_MB" -lt 1024 ]; then
+    MAX_MEMORY_MB=1024  # Minimum 1GB
+fi
+
+log_info "Configuring Valkey with ${MAX_MEMORY_MB}MB memory allocation"
+
+# Create Valkey configuration directory if it doesn't exist
+mkdir -p /etc/valkey || handle_error "Failed to create Valkey configuration directory"
+
+# Configure Valkey with optimized settings for FreeRADIUS
+cat > /etc/valkey/valkey.conf << EOL
+# Valkey configuration for FreeRADIUS
+
+bind 0.0.0.0 ::0
+protected-mode yes
+port 6379
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+daemonize no
+supervised systemd
+pidfile /var/run/valkey/valkey.pid
+loglevel notice
+logfile /var/log/valkey/valkey.log
+databases 16
+
+# Memory management
+maxmemory ${MAX_MEMORY_MB}mb
+maxmemory-policy volatile-lru
+maxmemory-samples 5
+
+# AOF persistence (enabled for better durability)
+appendonly yes
+dir /var/lib/valkey
+appendfilename "appendonly.aof"
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+aof-load-truncated yes
+aof-rewrite-incremental-fsync yes
+
+# Performance optimizations
+stop-writes-on-bgsave-error no
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+
+# Disable RDB snapshots since we're using AOF
+save ""
+
+# Security
+# Reuse the same password as MySQL for simplicity
+requirepass "$MYSQL_PASSWORD"
+
+# Network
+tcp-keepalive 300
+repl-timeout 60
+repl-ping-slave-period 10
+repl-backlog-size 1mb
+repl-backlog-ttl 3600
+
+# Client timeouts
+timeout 0
+tcp-keepalive 300
+
+# Disable dangerous commands
+rename-command FLUSHDB ""
+rename-command FLUSHALL ""
+rename-command CONFIG ""
+rename-command SHUTDOWN ""
+
+# Set the number of threads to serve the requests
+io-threads 2
+io-threads-do-reads yes
+
+# Set the max number of connected clients at the same time
+maxclients 10000
+
+# Set the threshold for keys with an expire set to be considered for deletion
+active-expire-effort 1
+
+# Set the threshold for client output buffer limits
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit replica 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+
+# Tune hash data structure
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+
+# Tune list data structure
+list-max-ziplist-size -2
+
+# Tune set data structure
+set-max-intset-entries 512
+
+# Tune zset data structure
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+
+# Tune hll data structure
+hll-sparse-max-bytes 3000
+
+# Tune stream data structure
+stream-node-max-bytes 4096
+stream-node-max-entries 100
+
+# Enable active defragmentation
+active-defrag-threshold-lower 10
+active-defrag-threshold-upper 100
+active-defrag-ignore-bytes 100mb
+active-defrag-cycle-min 5
+active-defrag-cycle-max 75
+active-defrag-max-scan-fields 1000
+EOL
+
+# Set proper permissions for Valkey directories
+log_step "Setting Valkey directory permissions"
+mkdir -p /var/lib/valkey/appendonlydir
+chown -R valkey:valkey /var/lib/valkey /var/log/valkey /var/run/valkey
+chmod 750 /var/lib/valkey /var/log/valkey /var/run/valkey
+
+# Fix Valkey service
+sed -i 's/ConditionPathExists=!\/etc\/valkey\/REDIS_MIGRATION/ConditionPathExists=\/etc\/valkey\/REDIS_MIGRATION/g' /usr/lib/systemd/system/valkey.service
+
+# Restart Valkey to apply new configuration
+systemctl daemon-reexec || log_warning "daemon-reexec failed (non-critical)"
+systemctl daemon-reload || handle_error "Failed to reload systemd daemon"
+systemctl restart valkey || handle_error "Failed to restart Valkey"
+systemctl enable valkey || handle_error "Failed to enable Valkey"
+
+# Verify Valkey is running
+log_step "Verifying Valkey service status"
+
+# Check service status
+if systemctl is-active --quiet valkey; then
+    log_success "Valkey service is running"
+    COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
+else
+    # If service is not running, try to get more information
+    log_warning "Valkey service is not running as expected. Checking status..."
+    systemctl status valkey --no-pager || true
+    
+    # Try to start the service
+    log_info "Attempting to start Valkey service..."
+    if systemctl start valkey; then
+        log_success "Successfully started Valkey service"
+        COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
+    else
+        # If we still can't start, show detailed error but don't fail the script
+        log_error "Failed to start Valkey service. Please check the logs with: journalctl -u valkey -n 50"
+        log_warning "Continuing installation despite Valkey service issue..."
+        COMPLETED_STEPS+=("Valkey configuration completed but service failed to start")
+    fi
+fi
+
+# Create Valkey debug script
+log_step "Creating Valkey debug script"
+cat > /usr/local/bin/valkey-debug.sh << 'EOF'
+#!/bin/bash
+
+VALKEY_HOST="127.0.0.1"
+VALKEY_PORT="6379"
+
+echo "=== Valkey Status ==="
+systemctl status valkey --no-pager -l
+
+echo -e "\n=== Valkey Key Statistics ==="
+echo "Total Keys in DB 0: $(valkey-cli -h $VALKEY_HOST -p $VALKEY_PORT dbsize)"
+
+EOF
+
+chmod +x /usr/local/bin/valkey-debug.sh
+
+COMPLETED_STEPS+=("Valkey monitoring configured")
+
+# Add monitoring cron job
+log_step "Adding monitoring cron job"
+echo "*/5 * * * * /usr/local/bin/valkey-debug.sh" > cronjob || handle_error "Failed to write monitoring cron job to temporary file"
+crontab cronjob || handle_error "Failed to install monitoring cron job"
+rm cronjob || handle_error "Failed to remove temporary monitoring cron job file"
+COMPLETED_STEPS+=("Monitoring cron job added")
+
+# Verify Valkey is working
+log_step "Verifying Valkey installation"
+if ! systemctl is-active --quiet valkey; then
+handle_error "Valkey service is not running"
+fi
+
+# Test Valkey connectivity and basic operations
+if [ "$(valkey-cli ping)" != "PONG" ]; then
+handle_error "Valkey is not responding to ping"
+fi
+
+# Test Valkey write operation
+if [ "$(valkey-cli set test_key test_value)" != "OK" ]; then
+handle_error "Valkey write operation failed"
+fi
+
+# Test Valkey read operation
+TEST_VALUE=$(valkey-cli get test_key)
+if [ "$TEST_VALUE" != "test_value" ]; then
+handle_error "Valkey read operation failed"
+fi
+
+# Test Valkey delete operation
+if [ "$(valkey-cli del test_key)" != "1" ]; then
+handle_error "Valkey delete operation failed"
+fi
+
+# Check Valkey info for basic stats
+if ! valkey-cli info | grep -q "valkey_version"; then
+handle_error "Unable to get Valkey server information"
+fi
+
+COMPLETED_STEPS+=("Valkey functionality verified")
 
 # Set Default PHP Version
 log_step "Setting default PHP version"
@@ -434,47 +697,6 @@ if ! command -v composer &> /dev/null; then
 fi
 COMPLETED_STEPS+=("Composer installed")
 
-# Configure Redis
-log_step "Configuring Redis"
-
-# Update Redis configuration
-sed -i 's/^bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf || handle_error "Failed to update Redis bind address"
-sed -i 's/^# requirepass .*/requirepass simpleisp/' /etc/redis/redis.conf || handle_error "Failed to set Redis password"
-
-# Enable and restart Redis service
-systemctl enable redis-server || handle_error "Failed to enable Redis service"
-systemctl restart redis-server || handle_error "Failed to restart Redis service"
-COMPLETED_STEPS+=("Redis configured and enabled")
-
-
-# Enable buffered-sql site
-log_step "Enabling buffered-sql site"
-# Ensure the sites-enabled directory exists
-mkdir -p /etc/freeradius/sites-enabled || handle_error "Failed to create FreeRADIUS sites-enabled directory"
-ln -sf /etc/freeradius/sites-available/buffered-sql /etc/freeradius/sites-enabled/buffered-sql || handle_error "Failed to enable buffered-sql site"
-
-# Enable SQL module for FreeRADIUS
-log_step "Enabling SQL module"
-# Ensure the mods-enabled directory exists
-mkdir -p /etc/freeradius/mods-enabled || handle_error "Failed to create FreeRADIUS mods-enabled directory"
-ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql || handle_error "Failed to enable SQL module"
-COMPLETED_STEPS+=("FreeRADIUS SQL module enabled")
-
-# Enable and configure FreeRADIUS REST module
-log_step "Enabling and configuring FreeRADIUS REST module"
-# REST module disabled for SimpleISP to avoid connection errors during configuration test
-# ln -sf /etc/freeradius/mods-available/rest /etc/freeradius/mods-enabled/rest || handle_error "Failed to enable REST module"
-
-# Configure REST module connect_uri
-REST_CONFIG="/etc/freeradius/mods-available/rest"
-if [ -f "$REST_CONFIG" ]; then
-    # Update connect_uri to use domain/api instead of localhost
-    # sed -i 's|connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || handle_error "Failed to configure REST module connect_uri"
-    # Also handle the commented version
-    # sed -i 's|# connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || true
-    log_info "REST module configuration skipped for SimpleISP"
-fi
-COMPLETED_STEPS+=("FreeRADIUS REST module disabled for SimpleISP")
 
 # Setup Laravel application
 log_step "Setting up Laravel application"
@@ -511,60 +733,6 @@ sed -i "s|APP_URL=.*|APP_URL=https://$DOMAIN|" .env || handle_error "Failed to u
 sed -i "s|APP_NAME=.*|APP_NAME=\"$DOMAIN\"|" .env || handle_error "Failed to update APP_NAME in .env"
 COMPLETED_STEPS+=(".env file updated with database credentials")
 
-# Configure FreeRADIUS
-log_step "Configuring FreeRADIUS"
-SQL_FILE="/etc/freeradius/mods-available/sql"
-if [ -f "$SQL_FILE" ]; then
-    # Configure SQL driver and dialect
-    sed -i 's/[# ]*driver = "rlm_sql_null"/        driver = "rlm_sql_mysql"/' "$SQL_FILE" || handle_error "Failed to update driver in FreeRADIUS SQL configuration"
-    sed -i 's/[# ]*dialect = "mysql"/        dialect = "mysql"/' "$SQL_FILE" || handle_error "Failed to update dialect in FreeRADIUS SQL configuration"
-
-    # Update only the connection info section
-    sed -i 's/^#*[[:space:]]*server[[:space:]]*=.*$/        server = "localhost"/' "$SQL_FILE" || handle_error "Failed to update server in FreeRADIUS SQL configuration"
-    sed -i 's/^#*[[:space:]]*port[[:space:]]*=.*$/        port = 3306/' "$SQL_FILE" || handle_error "Failed to update port in FreeRADIUS SQL configuration"
-    sed -i "s/^#*[[:space:]]*login[[:space:]]*=.*$/        login = \"$MYSQL_USER\"/" "$SQL_FILE" || handle_error "Failed to update login in FreeRADIUS SQL configuration"
-    sed -i "s/^#*[[:space:]]*password[[:space:]]*=.*$/        password = \"$MYSQL_PASSWORD\"/" "$SQL_FILE" || handle_error "Failed to update password in FreeRADIUS SQL configuration"
-    sed -i "s/^#*[[:space:]]*radius_db[[:space:]]*=.*$/        radius_db = \"$MYSQL_DATABASE\"/" "$SQL_FILE" || handle_error "Failed to update radius_db in FreeRADIUS SQL configuration"
-
-    # Comment out TLS configuration
-    sed -i '/mysql {/,/^[[:space:]]*}$/c\mysql {\n        # TLS configuration commented out' "$SQL_FILE" || handle_error "Failed to comment out TLS configuration in FreeRADIUS SQL configuration"
-
-    # Uncomment client_table
-    sed -i 's/[# ]*client_table = "nas"/        client_table = "nas"/' "$SQL_FILE" || handle_error "Failed to uncomment client_table in FreeRADIUS SQL configuration"
-
-    # Enable SQL module in FreeRADIUS
-    ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/ || handle_error "Failed to enable SQL module in FreeRADIUS"
-    
-    # Enable and configure FreeRADIUS REST module
-    # REST module disabled for SimpleISP to avoid connection errors during configuration test
-    # ln -sf /etc/freeradius/mods-available/rest /etc/freeradius/mods-enabled/rest || handle_error "Failed to enable REST module in FreeRADIUS"
-    
-    # Configure REST module connect_uri
-    REST_CONFIG="/etc/freeradius/mods-available/rest"
-    if [ -f "$REST_CONFIG" ]; then
-        # Update connect_uri to use domain/api instead of localhost
-        # sed -i 's|connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || handle_error "Failed to configure REST module connect_uri"
-        # Also handle the commented version
-        # sed -i 's|# connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || true
-        log_info "REST module configuration skipped for SimpleISP"
-    fi
-fi
-COMPLETED_STEPS+=("FreeRADIUS modules configured")
-
-# Configure FreeRADIUS default site
-log_step "Configuring FreeRADIUS default site"
-DEFAULT_SITE="/etc/freeradius/sites-enabled/default"
-if [ -f "$DEFAULT_SITE" ]; then
-    # Change -sql to sql
-    sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql in FreeRADIUS default site configuration"
-
-    # Comment out detail line
-    sed -i 's/^[[:space:]]*detail/#       detail/' "$DEFAULT_SITE" || handle_error "Failed to comment out detail line in FreeRADIUS default site configuration"
-fi
-
-
-
-COMPLETED_STEPS+=("FreeRADIUS default site configured")
 
 # Restart services
 log_step "Restarting services"
@@ -667,10 +835,41 @@ mysql -u root < /tmp/radius_optimize.sql || handle_error "Failed to optimize RAD
 rm -f /tmp/radius_optimize.sql
 COMPLETED_STEPS+=("RADIUS database indexes optimized")
 
-# Test FreeRADIUS configuration
-log_step "Testing FreeRADIUS configuration"
+# Configure FreeRADIUS
+log_step "Configuring FreeRADIUS"
+
+# Enable buffered-sql site
+log_step "Enabling buffered-sql site"
+# Ensure the sites-enabled directory exists
+mkdir -p /etc/freeradius/sites-enabled || handle_error "Failed to create FreeRADIUS sites-enabled directory"
+ln -sf /etc/freeradius/sites-available/buffered-sql /etc/freeradius/sites-enabled/buffered-sql || handle_error "Failed to enable buffered-sql site"
+COMPLETED_STEPS+=("FreeRADIUS buffered-sql site enabled")
+
+# Enable SQL module for FreeRADIUS
+log_step "Enabling SQL module"
+# Ensure the mods-enabled directory exists
+mkdir -p /etc/freeradius/mods-enabled || handle_error "Failed to create FreeRADIUS mods-enabled directory"
+ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql || handle_error "Failed to enable SQL module"
+COMPLETED_STEPS+=("FreeRADIUS SQL module enabled")
+
+# Configure FreeRADIUS REST module
+log_step "Configuring FreeRADIUS REST module"
+REST_CONFIG="/etc/freeradius/mods-available/rest"
+
+# REST module disabled for SimpleISP to avoid connection errors during configuration test
+#rm /etc/freeradius/mods-enabled/rest || handle_error "Failed to disable REST module"
+
+if [ -f "$REST_CONFIG" ]; then
+    # Update connect_uri to use domain/api instead of localhost
+    sed -i 's|connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || handle_error "Failed to configure REST module connect_uri"
+    # Also handle the commented version
+    sed -i 's|# connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || true
+fi
+
+COMPLETED_STEPS+=("FreeRADIUS REST module configured (disabled for SimpleISP)")
 
 # Ensure FreeRADIUS configuration files exist (restore if missing)
+log_step "Checking FreeRADIUS radiusd.conf"
 if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
     log_info "FreeRADIUS configuration files missing, reinstalling and reconfiguring FreeRADIUS package"
     
@@ -780,10 +979,78 @@ EOF
     log_success "FreeRADIUS configuration files restored"
 fi
 
-if ! freeradius -XC 2>&1 | grep -q "Configuration appears to be OK"; then
-    handle_error "FreeRADIUS configuration test failed"
+COMPLETED_STEPS+=("Completed checking radiusd.conf")
+
+# Write new FreeRADIUS SQL module
+log_step "Writing new FreeRADIUS SQL module"
+
+SQL_FILE="/etc/freeradius/mods-available/sql"
+
+# Backup if it exists
+[ -f "$SQL_FILE" ] && cp "$SQL_FILE" "${SQL_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+
+cat > "$SQL_FILE" <<EOF
+# -*- text -*-
+sql {
+	dialect = "mysql"
+	driver = "rlm_sql_mysql"
+
+	mysql {
+		warnings = auto
+	}
+
+	radius_db = "$MYSQL_DATABASE"
+	server = "localhost"
+	port = 3306
+	login = "$MYSQL_USER"
+	password = "$MYSQL_PASSWORD"
+
+	acct_table1 = "radacct"
+	acct_table2 = "radacct"
+	postauth_table = "radpostauth"
+	authcheck_table = "radcheck"
+	groupcheck_table = "radgroupcheck"
+	authreply_table = "radreply"
+	groupreply_table = "radgroupreply"
+	usergroup_table = "radusergroup"
+
+	delete_stale_sessions = yes
+
+	pool {
+		start = \${thread[pool].start_servers}
+		min = \${thread[pool].min_spare_servers}
+		max = \${thread[pool].max_servers}
+		spare = \${thread[pool].max_spare_servers}
+		uses = 0
+		retry_delay = 30
+		lifetime = 0
+		idle_timeout = 60
+		max_retries = 5
+	}
+
+	read_clients = yes
+	client_table = "nas"
+	group_attribute = "SQL-Group"
+
+	\$INCLUDE \${modconfdir}/\${.:name}/main/mysql/queries.conf
+}
+EOF
+
+log_success "FreeRADIUS SQL module written to $SQL_FILE"
+COMPLETED_STEPS+=("FreeRADIUS SQL module written with database credentials")
+
+# Configure FreeRADIUS default site
+log_step "Configuring FreeRADIUS default site"
+DEFAULT_SITE="/etc/freeradius/sites-enabled/default"
+if [ -f "$DEFAULT_SITE" ]; then
+    # Change -sql to sql
+    sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql in FreeRADIUS default site configuration"
+
+    # Comment out detail line
+    sed -i 's/^[[:space:]]*detail/#       detail/' "$DEFAULT_SITE" || handle_error "Failed to comment out detail line in FreeRADIUS default site configuration"
 fi
-COMPLETED_STEPS+=("FreeRADIUS configuration tested")
+
+COMPLETED_STEPS+=("FreeRADIUS default site configured")
 
 # Start and enable FreeRADIUS now that database tables are ready
 log_step "Starting and enabling FreeRADIUS"
@@ -1038,7 +1305,7 @@ echo "[$(date)] Detected PHP version: $PHP_VERSION"
 
 # Stop services
 log_step "Stopping services"
-systemctl stop nginx freeradius mariadb redis-server php${PHP_VERSION}-fpm supervisor openvpn || echo "Could not stop all services"
+systemctl stop nginx freeradius mariadb valkey php${PHP_VERSION}-fpm supervisor openvpn || echo "Could not stop all services"
 
 # Remove web files
 log_step "Removing web files"
