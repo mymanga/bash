@@ -45,7 +45,7 @@ echo "[$(date)] Detected PHP version: $PHP_VERSION"
 
 # Stop services
 log_step "Stopping services"
-systemctl stop nginx freeradius mariadb valkey-server php${PHP_VERSION}-fpm supervisor openvpn || echo "Could not stop all services"
+systemctl stop nginx freeradius mariadb valkey-server valkey php${PHP_VERSION}-fpm supervisor openvpn || echo "Could not stop all services"
 
 # Remove web files
 log_step "Removing web files"
