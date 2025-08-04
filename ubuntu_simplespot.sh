@@ -405,6 +405,7 @@ EOL
 
 # Fix Valkey service
 sed -i 's/ConditionPathExists=!\/etc\/valkey\/REDIS_MIGRATION/ConditionPathExists=\/etc\/valkey\/REDIS_MIGRATION/g' /usr/lib/systemd/system/valkey-server.service
+touch /etc/valkey/REDIS_MIGRATION
 
 # # Set permissions for AOF directory if it exists
 # if [ -d "/var/lib/valkey/appendonlydir" ]; then
