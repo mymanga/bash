@@ -872,6 +872,15 @@ log_step "Setting correct www permissions"
 chown -R www-data:www-data /var/www/html || handle_error "Failed to set ownership of web root"
 chmod -R 775 /var/www/html/storage || handle_error "Failed to set permissions of storage directory"
 chmod -R 775 /var/www/html/bootstrap/cache || handle_error "Failed to set permissions of cache directory"
+
+# Make the scripts executable
+chmod +x /var/www/html/sh/set_permissions.sh || handle_error "Failed to make permissions script executable"
+chmod +x /var/www/html/sh/restart-services.sh || handle_error "Failed to make services script executable"
+
+# Run the script once to apply initial configuration
+/var/www/html/sh/set_permissions.sh || handle_error "Failed to run permissions script"
+/var/www/html/sh/restart-services.sh || handle_error "Failed to run services script"
+
 COMPLETED_STEPS+=("Correct www permissions set")
 
 # Optimize RADIUS database indexes
