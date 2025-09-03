@@ -252,7 +252,6 @@ VKEY_OVERRIDE_FILE="${VKEY_OVERRIDE_DIR}/override.conf"
 mkdir -p "$VKEY_OVERRIDE_DIR"
 cat > "$VKEY_OVERRIDE_FILE" << 'EOF'
 [Unit]
-ConditionPathExists=/etc/valkey/REDIS_MIGRATION
 
 [Service]
 # Increase timeouts to prevent premature termination
@@ -404,8 +403,8 @@ EOL
 # chmod 750 /var/lib/valkey /var/log/valkey /var/run/valkey
 
 # Fix Valkey service
-sed -i 's/ConditionPathExists=!\/etc\/valkey\/REDIS_MIGRATION/ConditionPathExists=\/etc\/valkey\/REDIS_MIGRATION/g' /usr/lib/systemd/system/valkey-server.service
-touch /etc/valkey/REDIS_MIGRATION
+#sed -i 's/ConditionPathExists=!\/etc\/valkey\/REDIS_MIGRATION/ConditionPathExists=\/etc\/valkey\/REDIS_MIGRATION/g' /usr/lib/systemd/system/valkey-server.service
+#touch /etc/valkey/REDIS_MIGRATION
 
 # # Set permissions for AOF directory if it exists
 # if [ -d "/var/lib/valkey/appendonlydir" ]; then
