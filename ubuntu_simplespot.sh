@@ -1168,7 +1168,7 @@ if [ -f "/etc/freeradius/mods-available/sql" ]; then
     ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/ || handle_error "Failed to re-enable SQL module"
 fi
 if [ -f "/etc/freeradius/mods-available/rest" ]; then
-    ln -sf /etc/freeradius/mods-available/rest /etc/freeradius/mods-enabled/ || handle_error "Failed to re-enable REST module"
+    log_info "Skipping REST module re-enable; using SQL accounting"
 fi
 log_success "FreeRADIUS configuration files restored"
 
@@ -1246,15 +1246,14 @@ EOF
 log_success "FreeRADIUS SQL module written to $SQL_FILE"
 COMPLETED_STEPS+=("FreeRADIUS SQL module written with database credentials")
 
-# Enable FreeRADIUS REST module
-log_step "Enabling FreeRADIUS REST module"
-ln -sf /etc/freeradius/mods-available/rest /etc/freeradius/mods-enabled/rest || handle_error "Failed to enable REST module"
-COMPLETED_STEPS+=("FreeRADIUS REST module enabled")
+# Skip enabling FreeRADIUS REST module; use SQL accounting
+log_step "Skipping FreeRADIUS REST module enable"
+COMPLETED_STEPS+=("FreeRADIUS REST module skipped")
 
 # Configure REST module connect_uri
-log_step "Configuring FreeRADIUS REST module"
-REST_CONFIG="/etc/freeradius/mods-available/rest"
-if [ -f "$REST_CONFIG" ]; then
+log_step "Skipping FreeRADIUS REST module configuration"
+# REST module configuration disabled; no REST connect_uri
+if false; then
     
     # Configure REST module to use JSON body and TLS
     sed -i '/accounting\s*{/,/^\s*}/{s/^\(\s*\)tls.*/\1body = '\''json'\''\n\1tls = ${..tls}/}' /etc/freeradius/mods-available/rest || handle_error "Failed to configure accounting section"
@@ -1264,7 +1263,7 @@ if [ -f "$REST_CONFIG" ]; then
     sed -i 's|# connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || true
 fi
 
-COMPLETED_STEPS+=("FreeRADIUS REST module configured")
+COMPLETED_STEPS+=("Skipped FreeRADIUS REST module configuration")
 
 
 # Configure FreeRADIUS default site
@@ -1296,8 +1295,7 @@ accounting {
 
 #   sqlippool
 
-#   sql
-rest
+sql
 
 #   if (noop) {
 #       ok
