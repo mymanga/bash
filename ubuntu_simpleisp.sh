@@ -703,6 +703,7 @@ log_step "Setting up Laravel application"
 LOCAL_PATH="/var/www/html"
 REPO_URL="$GITHUB_REPO_URL"
 
+
 # Remove existing web root if it exists (no backup)
 if [ -d "$LOCAL_PATH" ]; then
     rm -rf "$LOCAL_PATH" || handle_error "Failed to remove existing web root"
@@ -714,7 +715,7 @@ cd "$LOCAL_PATH" || handle_error "Failed to change directory to web root"
 
 # Install Laravel dependencies
 log_step "Installing Laravel dependencies"
-composer install --no-interaction || handle_error "Failed to install Laravel dependencies"
+COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-audit --prefer-dist || handle_error "Failed to install Laravel dependencies"
 COMPLETED_STEPS+=("Laravel dependencies installed")
 
 # Create and configure .env file
