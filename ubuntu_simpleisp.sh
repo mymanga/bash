@@ -715,7 +715,7 @@ cd "$LOCAL_PATH" || handle_error "Failed to change directory to web root"
 
 # Install Laravel dependencies
 log_step "Installing Laravel dependencies"
-COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-audit --prefer-dist || handle_error "Failed to install Laravel dependencies"
+COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-security-blocking --prefer-dist || handle_error "Failed to install Laravel dependencies"
 COMPLETED_STEPS+=("Laravel dependencies installed")
 
 # Create and configure .env file
