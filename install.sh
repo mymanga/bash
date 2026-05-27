@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # Install MariaDB without a password
 export DEBIAN_FRONTEND=noninteractive

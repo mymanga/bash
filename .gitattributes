@@ -1,0 +1,3 @@
+# Enforce Unix line endings (LF) for shell scripts to prevent
+# "cannot execute: required file not found" errors on Linux servers.
+*.sh text eol=lf

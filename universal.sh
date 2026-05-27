@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
+﻿#!/bin/bash
 # ---------------------------------------------------------------------------------
-# universal2_replaced_complete.sh — Universal autotune & in-place PHP-FPM edits
+# universal2_replaced_complete.sh â€” Universal autotune & in-place PHP-FPM edits
 # - Backups, MariaDB tuning fragment, index ensures, FreeRADIUS tuning
 # - PHP-FPM: REPLACE existing pm.* and slowlog/status/catch directives IN-PLACE
 # - Removes any existing AUTOTUNE block before edits
@@ -203,14 +203,14 @@ remove_old() {
 }
 
 log "========================"
-log " Step 3: Backup retention — keep last ${KEEP}"
+log " Step 3: Backup retention â€” keep last ${KEEP}"
 log "------------------------"
 remove_old "${DB_BACKUP_DIR}"
 remove_old "${CONF_BACKUP_DIR}"
 log ""
 
 # ----------------------------------------------------------------------
-# Step 4: Schema adjustments — indexes and safe column modifications
+# Step 4: Schema adjustments â€” indexes and safe column modifications
 # ----------------------------------------------------------------------
 log "========================"
 log " Step 4: Ensure required indexes & column sizes on radius/vouchers"
@@ -702,7 +702,7 @@ else
           log "[DRY] would replace ${key} = ${val} in ${file}"
         fi
       else
-        # No existing line — insert after anchor (anchor is anchor key, e.g., 'pm' for 'pm = dynamic')
+        # No existing line â€” insert after anchor (anchor is anchor key, e.g., 'pm' for 'pm = dynamic')
         if [ -n "$anchor" ] && grep -qE "^[[:space:]]*${anchor}[[:space:]]*=" "$file"; then
           if [ "$DRY_RUN" -eq 0 ]; then
             awk -v a="$anchor" -v newline="${key} = ${val}" '{
@@ -768,7 +768,7 @@ else
 
     # Write suggestion report
     cat > "$PHPFPM_SUGGESTION_FILE" <<EOF
-PHP-FPM replacement report — $(date)
+PHP-FPM replacement report â€” $(date)
 ----------------------------------
 Detection method  : ${DETECTION_METHOD:-unknown}
 PHP-FPM service   : ${PHPFPM_SERVICE}

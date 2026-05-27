@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # Check for jq and install if missing
 if ! command -v jq &> /dev/null; then

@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # shellcheck disable=SC1091,SC2164,SC2034,SC1072,SC1073,SC1009
 
 # Secure OpenVPN server installer for Debian, Ubuntu, CentOS, Amazon Linux 2, Fedora, Oracle Linux 8, Arch Linux, Rocky Linux and AlmaLinux.
@@ -22,7 +22,7 @@ function checkOS() {
 
 		if [[ $ID == "debian" || $ID == "raspbian" ]]; then
 			if [[ $VERSION_ID -lt 9 ]]; then
-				echo "⚠️ Your version of Debian is not supported."
+				echo "âš ï¸ Your version of Debian is not supported."
 				echo ""
 				echo "However, if you're using Debian >= 9 or unstable/testing then you can continue, at your own risk."
 				echo ""
@@ -37,7 +37,7 @@ function checkOS() {
 			OS="ubuntu"
 			MAJOR_UBUNTU_VERSION=$(echo "$VERSION_ID" | cut -d '.' -f1)
 			if [[ $MAJOR_UBUNTU_VERSION -lt 16 ]]; then
-				echo "⚠️ Your version of Ubuntu is not supported."
+				echo "âš ï¸ Your version of Ubuntu is not supported."
 				echo ""
 				echo "However, if you're using Ubuntu >= 16.04 or beta, then you can continue, at your own risk."
 				echo ""
@@ -57,7 +57,7 @@ function checkOS() {
 		if [[ $ID == "centos" || $ID == "rocky" || $ID == "almalinux" ]]; then
 			OS="centos"
 			if [[ $VERSION_ID -lt 7 ]]; then
-				echo "⚠️ Your version of CentOS is not supported."
+				echo "âš ï¸ Your version of CentOS is not supported."
 				echo ""
 				echo "The script only support CentOS 7 and CentOS 8."
 				echo ""
@@ -76,7 +76,7 @@ function checkOS() {
 		if [[ $ID == "amzn" ]]; then
 			OS="amzn"
 			if [[ $VERSION_ID != "2" ]]; then
-				echo "⚠️ Your version of Amazon Linux is not supported."
+				echo "âš ï¸ Your version of Amazon Linux is not supported."
 				echo ""
 				echo "The script only support Amazon Linux 2."
 				echo ""
@@ -237,7 +237,7 @@ function installQuestions() {
 	if [[ $APPROVE_IP =~ n ]]; then
 		read -rp "IP address: " -e -i "$IP" IP
 	fi
-	# If $IP is a private IP address, the server must be behind NAT
+	#Â If $IP is a private IP address, the server must be behind NAT
 	if echo "$IP" | grep -qE '^(10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|192\.168)'; then
 		echo ""
 		echo "It seems this server is behind NAT. What is its public IPv4 address or hostname?"
@@ -1089,7 +1089,7 @@ function newClient() {
 			./easyrsa --batch build-client-full "$CLIENT" nopass
 			;;
 		2)
-			echo "⚠️ You will be asked for the client password below ⚠️"
+			echo "âš ï¸ You will be asked for the client password below âš ï¸"
 			./easyrsa --batch build-client-full "$CLIENT"
 			;;
 		esac

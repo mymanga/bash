@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 set -e
 
@@ -55,7 +55,7 @@ sed -i "/^\*filter/i \
 # Masquerade Winbox return traffic\n\
 -A POSTROUTING -p tcp -d ${SUBNET} --dport 8291 -j MASQUERADE\n\
 \n\
-# DNAT rules (.2 → .10)\n\
+# DNAT rules (.2 â†’ .10)\n\
 -A PREROUTING -p tcp --dport 2002 -j DNAT --to-destination ${BASE_NET}.2:8291\n\
 -A PREROUTING -p tcp --dport 2003 -j DNAT --to-destination ${BASE_NET}.3:8291\n\
 -A PREROUTING -p tcp --dport 2004 -j DNAT --to-destination ${BASE_NET}.4:8291\n\
@@ -89,4 +89,4 @@ done
 # -----------------------------
 ufw reload >/dev/null
 
-echo "✔ UFW NAT + forwarding configured successfully (.2 → .10)"
+echo "âœ” UFW NAT + forwarding configured successfully (.2 â†’ .10)"

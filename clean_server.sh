@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # Cleanup script for SimpleISP/SimpleSpot
 # This script will uninstall all software installed by the SimpleISP/SimpleSpot installer
