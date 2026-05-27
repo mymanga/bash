@@ -366,7 +366,7 @@ log "------------------------"
 TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo $((RAM_MB*1024)))
 TOTAL_MEM_BYTES=$((TOTAL_MEM_KB * 1024))
 MIN_POOL_BYTES=$((1 * 1024 * 1024 * 1024))
-CALC_POOL_BYTES=$(awk -v m="$TOTAL_MEM_BYTES" 'BEGIN{printf("%d", m*0.50)}')
+CALC_POOL_BYTES=$(awk -v m="$TOTAL_MEM_BYTES" 'BEGIN{printf("%d", m*0.40)}')
 INNODB_BUFFER_POOL_SIZE_BYTES=$(( CALC_POOL_BYTES < MIN_POOL_BYTES ? MIN_POOL_BYTES : CALC_POOL_BYTES ))
 ROUND_128MB=$((128 * 1024 * 1024))
 INNODB_BUFFER_POOL_SIZE_BYTES=$(( (INNODB_BUFFER_POOL_SIZE_BYTES / ROUND_128MB) * ROUND_128MB ))
@@ -434,6 +434,36 @@ if [ "$DRY_RUN" -eq 0 ]; then
 else
   log "[DRY] would write MariaDB config fragment -> ${MARIADB_FRAG}"
   rm -f "${MARIADB_FRAG_TMP}" || true
+fi
+
+log ""
+
+# -----------------------------------------------------
+# Step 5b: Compute and apply Valkey tuning
+# -----------------------------------------------------
+log "========================"
+log " Step 5b: Valkey tuning (maxmemory & volatile-lru)"
+log "------------------------"
+
+VALKEY_CONF="/etc/valkey/valkey.conf"
+if [ -f "$VALKEY_CONF" ]; then
+  VALKEY_MB=$(( RAM_MB * 15 / 100 ))
+  [ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
+  
+  log "[INFO] Valkey maxmemory: ${VALKEY_MB}M"
+  
+  if [ "$DRY_RUN" -eq 0 ]; then
+    cp -a "$VALKEY_CONF" "${VALKEY_CONF}.bak.${TIMESTAMP}"
+    sed -i -E "s/^#?maxmemory .*/maxmemory ${VALKEY_MB}mb/" "$VALKEY_CONF"
+    if ! grep -q "^maxmemory-policy" "$VALKEY_CONF"; then
+      echo "maxmemory-policy volatile-lru" >> "$VALKEY_CONF"
+    fi
+    log "[OK] Valkey configured with maxmemory ${VALKEY_MB}mb and volatile-lru"
+  else
+    log "[DRY] would tune Valkey maxmemory to ${VALKEY_MB}mb and volatile-lru"
+  fi
+else
+  log "[WARN] Valkey config not found at $VALKEY_CONF, skipping"
 fi
 
 log ""
@@ -617,9 +647,15 @@ else
     # Compute recommended values
     CPU_CORES=$(nproc --all 2>/dev/null || echo 1)
     TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-    RESERVE_BY_PERCENT=$(awk -v r="$TOTAL_RAM_MB" 'BEGIN{printf "%.0f", r*0.15}')
-    RESERVE_MB=$(( RESERVE_BY_PERCENT + CPU_CORES*200 ))
-    [ "$RESERVE_MB" -lt 1024 ] && RESERVE_MB=1024
+    # Match the global budget strategy: 15% OS + 40% DB + 15% Cache
+    OS_RESERVE_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
+    [ "$OS_RESERVE_MB" -lt 1024 ] && OS_RESERVE_MB=1024
+    MARIADB_POOL_MB=$(( TOTAL_RAM_MB * 40 / 100 ))
+    [ "$MARIADB_POOL_MB" -lt 256 ] && MARIADB_POOL_MB=256
+    VALKEY_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
+    [ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
+    
+    RESERVE_MB=$(( OS_RESERVE_MB + MARIADB_POOL_MB + VALKEY_MB ))
     AVAILABLE_FOR_PHP_MB=$(( TOTAL_RAM_MB - RESERVE_MB ))
     [ "$AVAILABLE_FOR_PHP_MB" -lt 256 ] && AVAILABLE_FOR_PHP_MB=256
 
@@ -831,6 +867,17 @@ for candidate in freeradius radiusd; do
 done
 if [ "$RAD_RESTARTED" -eq 0 ]; then
   log "[WARN] FreeRADIUS restart not confirmed; check OS packaging (freeradius or radiusd)"
+fi
+
+VALKEY_RESTARTED=0
+for candidate in valkey-server valkey; do
+  if restart_and_check "$candidate"; then
+    VALKEY_RESTARTED=1
+    break
+  fi
+done
+if [ "$VALKEY_RESTARTED" -eq 0 ]; then
+  log "[WARN] Valkey restart not confirmed; check OS packaging"
 fi
 
 if [ -n "${PHPFPM_SERVICE:-}" ]; then
