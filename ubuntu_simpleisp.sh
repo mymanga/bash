@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # Setup logging and error handling
 INSTALL_LOG="/root/install.txt"
@@ -11,20 +11,20 @@ PHP_VERSION="7.4"
 
 # Logging functions
 log_info() {
-    echo "â„¹ï¸  INFO: $1" | tee -a "$INSTALL_LOG"
+    echo "ℹ️  INFO: $1" | tee -a "$INSTALL_LOG"
 }
 
 log_success() {
-    echo "âœ… SUCCESS: $1" | tee -a "$INSTALL_LOG"
+    echo "✅ SUCCESS: $1" | tee -a "$INSTALL_LOG"
 }
 
 log_error() {
-    echo "âŒ ERROR: $1" | tee -a "$INSTALL_LOG"
+    echo "❌ ERROR: $1" | tee -a "$INSTALL_LOG"
 }
 
 log_step() {
     STEP_COUNT=$((STEP_COUNT + 1))
-    echo "ðŸ‘‰ STEP $STEP_COUNT: $1" | tee -a "$INSTALL_LOG"
+    echo "👉 STEP $STEP_COUNT: $1" | tee -a "$INSTALL_LOG"
 }
 
 handle_error() {
