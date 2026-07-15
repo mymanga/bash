@@ -50,7 +50,7 @@ Batched cleanup of closed `radacct` sessions, `radpostauth`, expired portal sess
 db_cleanup.sh [--dry-run] [--auto] [--ask]
 ```
 
-Run interactively it prompts per category for a retention age (`12h`, `2d`, `1w`, `3m`, `s` to skip) and confirms before deleting. From cron (no terminal) it silently uses the built-in defaults. Logs to `/var/log/radius_db_cleanup.log`.
+Run interactively it prompts per category for a retention age (`12h`, `2d`, `1w`, `3m`, `s` to skip) and confirms before deleting. Without a terminal (or with `--auto`) it silently uses the built-in defaults. **Not scheduled** — run it manually when the database needs trimming. Logs to `/var/log/radius_db_cleanup.log`.
 
 ### `ovpn_fix.sh` — PHP-FPM OpenVPN sandbox fix
 
@@ -68,7 +68,8 @@ ovpn_fix.sh [--dry-run] [--no-restart]
 | `*/5 * * * *` | Valkey health monitor (`valkey-debug.sh`) |
 | `0 3 * * *` | `universal.sh` — daily autotune |
 | `@reboot` (after 120 s) | `universal.sh` — re-tune after boot |
-| `30 4 * * *` | `db_cleanup.sh` — database retention |
+
+`db_cleanup.sh` is deliberately not scheduled; run it manually when needed.
 
 ## Utility scripts
 

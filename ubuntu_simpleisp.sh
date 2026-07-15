@@ -948,13 +948,12 @@ done
 COMPLETED_STEPS+=("Maintenance scripts installed to /var/www/html/sh")
 
 # Schedule maintenance (Safe Append Fix): autotune daily at 3 AM and on every
-# reboot (delayed so MariaDB/Valkey/PHP-FPM are up before live tuning starts);
-# DB cleanup at 04:30 (non-interactive runs use its built-in retention defaults)
+# reboot (delayed so MariaDB/Valkey/PHP-FPM are up before live tuning starts).
+# db_cleanup.sh is intentionally NOT scheduled - run it manually when needed.
 log_step "Scheduling maintenance cron jobs"
 (crontab -l 2>/dev/null; echo "0 3 * * * /var/www/html/sh/universal.sh") | crontab - || handle_error "Failed to add universal.sh daily cron job"
 (crontab -l 2>/dev/null; echo "@reboot sleep 120; /var/www/html/sh/universal.sh") | crontab - || handle_error "Failed to add universal.sh reboot cron job"
-(crontab -l 2>/dev/null; echo "30 4 * * * /var/www/html/sh/db_cleanup.sh") | crontab - || handle_error "Failed to add db_cleanup.sh cron job"
-COMPLETED_STEPS+=("Maintenance cron jobs scheduled (universal.sh 3AM + reboot, db_cleanup.sh 04:30)")
+COMPLETED_STEPS+=("Maintenance cron jobs scheduled (universal.sh 3AM + reboot)")
 
 # Run the autotune once to apply the initial configuration
 log_step "Running initial system autotune (universal.sh)"
