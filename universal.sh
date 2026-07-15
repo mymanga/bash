@@ -1,11 +1,24 @@
-﻿#!/bin/bash
+#!/bin/bash
 # ---------------------------------------------------------------------------------
-# universal2_replaced_complete.sh â€” Universal autotune & in-place PHP-FPM edits
+# universal2_replaced_complete.sh - Universal autotune & in-place PHP-FPM edits
 # - Backups, MariaDB tuning fragment, index ensures, FreeRADIUS tuning
 # - PHP-FPM: REPLACE existing pm.* and slowlog/status/catch directives IN-PLACE
 # - Removes any existing AUTOTUNE block before edits
 # - Safe --dry-run support, lock to avoid concurrent runs
 # - Heavily commented where important (you requested comments)
+#
+# v2 (2026-07-14):
+# - No more restart-everything: MariaDB & Valkey tuned LIVE (SET GLOBAL /
+#   valkey-cli), PHP-FPM reloaded only if its pool changed (after php-fpm -t),
+#   FreeRADIUS restarted only if radiusd.conf changed AND passes -XC validation
+# - Backup retention now keeps the newest KEEP runs (was: newest 3 files,
+#   which deleted same-run backups and mis-sorted cp -a preserved mtimes)
+# - Dropped innodb_buffer_pool_instances (ignored since MariaDB 10.5),
+#   max_connections right-sized to observed load, old run logs pruned
+#
+# v3 (2026-07-14): CAPACITY MODEL - one sizing block scales every component
+#   from 2 vCPU / 2 GB to 16 vCPU / 16 GB (~5,000 concurrent users at top
+#   tier). Copy this script unchanged to any size server; it self-sizes.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -70,6 +83,9 @@ done
 mkdir -p "${DB_BACKUP_DIR}" "${CONF_BACKUP_DIR}" "$(dirname "${LOG}")"
 exec 3>&1 1>>"${LOG}" 2>&1
 
+# Prune old per-run logs so /var/log does not fill up over time
+find /var/log -maxdepth 1 -name 'universal_*.log' -mtime +30 -delete 2>/dev/null || true
+
 # Acquire an exclusive lock to avoid concurrent runs
 LOCK_FD=200
 LOCK_FILE="/var/lock/universal.lock"
@@ -102,6 +118,89 @@ log "Detected RAM: ${RAM_MB} MB"
 log "Detected vCPUs: ${VCPUS}"
 log "Dry-run mode: ${DRY_RUN}"
 log "Backups retention (keep): ${KEEP}"
+log ""
+
+# ---------------------------------------------------------------
+# Legacy cleanup: update_memory_config.sh is no longer part of the
+# stack (this script replaces it). Remove its file and cron entry
+# if a previous install left them behind. No-op on clean machines.
+# ---------------------------------------------------------------
+if [ -f /usr/local/bin/update_memory_config.sh ]; then
+  if [ "$DRY_RUN" -eq 0 ]; then
+    rm -f /usr/local/bin/update_memory_config.sh || true
+    log "[OK] removed legacy /usr/local/bin/update_memory_config.sh"
+  else
+    log "[DRY] would remove legacy /usr/local/bin/update_memory_config.sh"
+  fi
+fi
+if crontab -l 2>/dev/null | grep -q 'update_memory_config\.sh'; then
+  if [ "$DRY_RUN" -eq 0 ]; then
+    crontab -l 2>/dev/null | grep -v 'update_memory_config\.sh' | crontab - || true
+    log "[OK] removed legacy update_memory_config.sh cron entry"
+  else
+    log "[DRY] would remove legacy update_memory_config.sh cron entry"
+  fi
+fi
+
+# =====================================================================
+# CAPACITY MODEL (v3, 2026-07-14) - single source of sizing truth.
+# Scales the whole stack from 2 vCPU / 2 GB to 16 vCPU / 16 GB.
+# Design target at the top tier: ~5,000 concurrent hotspot users
+# (3,500 measured weekend peak + headroom).
+#
+# RAM budget: OS 12% (min 384M) | InnoDB pool 25% (384M..4G; the radius
+# DB is small - worker count, not cache, is the capacity currency here) |
+# Valkey 10% (128M..2G) | remainder -> PHP-FPM at ~16 MB per worker.
+# Worker RSS (~57MB) is mostly SHARED opcache; measured private cost is
+# 8-20 MB. The vendor portal long-polls payment status with usleep()
+# (vendor report issue #4), pinning one worker per waiting payer, so
+# PHP-FPM workers are the scarce resource under load.
+#
+# Computed values for the full VM lineup (verify with --dry-run on deploy):
+#   TIER      pool   valkey  workers  rad-thr  max_conn  ~users
+#   2C/2G     384M   199M      56       12       150      ~350
+#   4C/4G     896M   392M     118       24       202     ~1000
+#   4C/8G    1920M   794M     231       24       315     ~1500
+#   8C/8G    1920M   794M     231       48       339     ~2200
+#   8C/12G   2944M  1196M     343       48       451     ~3000
+#   12C/12G  2944M  1196M     343       72       475     ~3500
+#   12C/16G  3968M  1598M     457       72       589     ~4500
+#   16C/16G  3968M  1598M     457       96       613     ~5000
+# RAM sets worker count (payment-surge absorption); vCPUs set RADIUS
+# threads and query throughput. Asymmetric tiers (4C/8G, 8C/12G,
+# 12C/16G) are handled naturally: sleeping pollers cost RAM, not CPU.
+# =====================================================================
+OS_RESERVE_MB=$(( RAM_MB * 12 / 100 ))
+[ "$OS_RESERVE_MB" -lt 384 ] && OS_RESERVE_MB=384
+
+POOL_MB=$(( RAM_MB * 25 / 100 ))
+[ "$POOL_MB" -lt 384 ] && POOL_MB=384
+[ "$POOL_MB" -gt 4096 ] && POOL_MB=4096
+POOL_MB=$(( POOL_MB / 128 * 128 ))                 # 128M granularity
+MARIADB_FOOTPRINT_MB=$(( POOL_MB * 13 / 10 ))      # pool + ~30% engine overhead
+
+VALKEY_MB=$(( RAM_MB * 10 / 100 ))
+[ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
+[ "$VALKEY_MB" -gt 2048 ] && VALKEY_MB=2048
+
+PHP_BUDGET_MB=$(( RAM_MB - OS_RESERVE_MB - MARIADB_FOOTPRINT_MB - VALKEY_MB ))
+[ "$PHP_BUDGET_MB" -lt 256 ] && PHP_BUDGET_MB=256
+WORKER_COST_MB=16
+MAX_CHILDREN=$(( PHP_BUDGET_MB / WORKER_COST_MB ))
+[ "$MAX_CHILDREN" -lt 32 ] && MAX_CHILDREN=32
+[ "$MAX_CHILDREN" -gt 480 ] && MAX_CHILDREN=480
+
+RAD_MAX_SERVERS=$(( VCPUS * 6 ))
+[ "$RAD_MAX_SERVERS" -lt 12 ] && RAD_MAX_SERVERS=12
+[ "$RAD_MAX_SERVERS" -gt 128 ] && RAD_MAX_SERVERS=128
+
+# Every busy fpm worker + every RADIUS thread can hold one DB connection.
+MAX_CONNECTIONS=$(( MAX_CHILDREN + RAD_MAX_SERVERS + 60 ))
+[ "$MAX_CONNECTIONS" -lt 150 ] && MAX_CONNECTIONS=150
+[ "$MAX_CONNECTIONS" -gt 800 ] && MAX_CONNECTIONS=800
+
+log "[MODEL] os_reserve=${OS_RESERVE_MB}M pool=${POOL_MB}M valkey=${VALKEY_MB}M php_budget=${PHP_BUDGET_MB}M"
+log "[MODEL] fpm_max_children=${MAX_CHILDREN} rad_max_servers=${RAD_MAX_SERVERS} max_connections=${MAX_CONNECTIONS}"
 log ""
 
 # -------------------------------------------
@@ -194,23 +293,50 @@ log ""
 # Step 3: Enforce backup retention policy (keep last N)
 # -------------------------------------------------------
 remove_old() {
-  local dir="$1"
-  find "$dir" -maxdepth 1 -type f -printf '%T@ %p\n' | sort -n | awk -v keep="$KEEP" '{files[NR]=$2} END{n=NR; for(i=1;i<=n-keep;i++){ if(i>0 && i<=n){ print files[i] }}}' | while read -r old; do
-    [ -n "$old" ] || continue
-    if [ "$DRY_RUN" -eq 0 ]; then rm -f "$old" || true; fi
-    log "[REMOVED] $old"
-  done || true
+  # Retain the newest KEEP *runs* (grouped by their _YYYYmmdd_HHMMSS stamp),
+  # not the newest KEEP files: each run writes several files, and cp -a
+  # preserves source mtimes, so sorting raw files by mtime deleted fresh
+  # backups while keeping stale ones. Timestamps sort correctly as strings.
+  local dir="$1" stamps keep_list s
+  stamps=$(find "$dir" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null \
+             | grep -oE '[0-9]{8}_[0-9]{6}' | sort -ur || true)
+  [ -n "$stamps" ] || return 0
+  keep_list=$(printf '%s\n' "$stamps" | head -n "$KEEP")
+  for s in $stamps; do
+    if ! printf '%s\n' "$keep_list" | grep -qx "$s"; then
+      find "$dir" -maxdepth 1 -type f -name "*${s}*" | while read -r old; do
+        [ -n "$old" ] || continue
+        if [ "$DRY_RUN" -eq 0 ]; then rm -f "$old" || true; fi
+        log "[REMOVED] $old"
+      done || true
+    fi
+  done
+}
+
+prune_baks() {
+  # Keep the newest KEEP "<file>.bak.<TIMESTAMP>" copies written next to a
+  # live config. Same string-sort trick as remove_old: the stamp sorts
+  # correctly lexically, so the current run's backup is always kept and the
+  # FreeRADIUS rollback path can never be pruned away. Without this, the
+  # daily + @reboot crons would grow these side-by-side backups unbounded.
+  local file="$1" old
+  find "$(dirname "$file")" -maxdepth 1 -name "$(basename "$file").bak.*" -printf '%f\n' 2>/dev/null \
+    | sort -r | tail -n +"$((KEEP + 1))" | while read -r old; do
+      [ -n "$old" ] || continue
+      if [ "$DRY_RUN" -eq 0 ]; then rm -f "$(dirname "$file")/$old" || true; fi
+      log "[REMOVED] $(dirname "$file")/$old"
+    done || true
 }
 
 log "========================"
-log " Step 3: Backup retention â€” keep last ${KEEP}"
+log " Step 3: Backup retention - keep last ${KEEP}"
 log "------------------------"
 remove_old "${DB_BACKUP_DIR}"
 remove_old "${CONF_BACKUP_DIR}"
 log ""
 
 # ----------------------------------------------------------------------
-# Step 4: Schema adjustments â€” indexes and safe column modifications
+# Step 4: Schema adjustments - indexes and safe column modifications
 # ----------------------------------------------------------------------
 log "========================"
 log " Step 4: Ensure required indexes & column sizes on radius/vouchers"
@@ -363,40 +489,32 @@ log "========================"
 log " Step 5: Enhanced MariaDB InnoDB tuning (buffer/log/conn/tmp)"
 log "------------------------"
 
-TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo $((RAM_MB*1024)))
-TOTAL_MEM_BYTES=$((TOTAL_MEM_KB * 1024))
-MIN_POOL_BYTES=$((1 * 1024 * 1024 * 1024))
-CALC_POOL_BYTES=$(awk -v m="$TOTAL_MEM_BYTES" 'BEGIN{printf("%d", m*0.40)}')
-INNODB_BUFFER_POOL_SIZE_BYTES=$(( CALC_POOL_BYTES < MIN_POOL_BYTES ? MIN_POOL_BYTES : CALC_POOL_BYTES ))
-ROUND_128MB=$((128 * 1024 * 1024))
-INNODB_BUFFER_POOL_SIZE_BYTES=$(( (INNODB_BUFFER_POOL_SIZE_BYTES / ROUND_128MB) * ROUND_128MB ))
-if [ "$INNODB_BUFFER_POOL_SIZE_BYTES" -lt "$MIN_POOL_BYTES" ]; then INNODB_BUFFER_POOL_SIZE_BYTES=$MIN_POOL_BYTES; fi
-INNODB_BUFFER_POOL_SIZE_MB=$(( INNODB_BUFFER_POOL_SIZE_BYTES / 1024 / 1024 ))
+# All sizing comes from the CAPACITY MODEL block near the top.
+INNODB_BUFFER_POOL_SIZE_MB=$POOL_MB
+INNODB_BUFFER_POOL_SIZE_BYTES=$(( POOL_MB * 1024 * 1024 ))
 
-INNODB_BUFFER_POOL_INSTANCES=$(( INNODB_BUFFER_POOL_SIZE_MB / 1024 ))
-if [ "$INNODB_BUFFER_POOL_INSTANCES" -lt 1 ]; then INNODB_BUFFER_POOL_INSTANCES=1; fi
-if [ "$INNODB_BUFFER_POOL_INSTANCES" -gt 8 ]; then INNODB_BUFFER_POOL_INSTANCES=8; fi
+# NOTE: innodb_buffer_pool_instances was removed here - MariaDB 10.5+
+# uses a single buffer pool and silently ignores that variable.
+# NOTE: this 10.11 build refuses to GROW the pool via SET GLOBAL (warning,
+# value unchanged); shrinking works. Growth applies at the next restart.
 
 LOG_FILE_SIZE_BYTES=$(( INNODB_BUFFER_POOL_SIZE_BYTES / 4 ))
 MAX_LOG_BYTES=$((1 * 1024 * 1024 * 1024))
 if [ "$LOG_FILE_SIZE_BYTES" -gt "$MAX_LOG_BYTES" ]; then LOG_FILE_SIZE_BYTES=$MAX_LOG_BYTES; fi
 ROUND_16MB=$((16 * 1024 * 1024))
 INNODB_LOG_FILE_SIZE_BYTES=$(( (LOG_FILE_SIZE_BYTES / ROUND_16MB) * ROUND_16MB ))
+[ "$INNODB_LOG_FILE_SIZE_BYTES" -lt $((96 * 1024 * 1024)) ] && INNODB_LOG_FILE_SIZE_BYTES=$((96 * 1024 * 1024))
 INNODB_LOG_FILE_SIZE_MB=$(( INNODB_LOG_FILE_SIZE_BYTES / 1024 / 1024 ))
 
-MAX_CONNECTIONS=$(( VCPUS * 150 ))
-if [ "$MAX_CONNECTIONS" -gt 2000 ]; then MAX_CONNECTIONS=2000; fi
-
 TMP_TABLE_SIZE_MB=$(( INNODB_BUFFER_POOL_SIZE_MB / 8 ))
-if [ "$TMP_TABLE_SIZE_MB" -lt 64 ]; then TMP_TABLE_SIZE_MB=64; fi
-if [ "$TMP_TABLE_SIZE_MB" -gt 1024 ]; then TMP_TABLE_SIZE_MB=1024; fi
+if [ "$TMP_TABLE_SIZE_MB" -lt 32 ]; then TMP_TABLE_SIZE_MB=32; fi
+if [ "$TMP_TABLE_SIZE_MB" -gt 512 ]; then TMP_TABLE_SIZE_MB=512; fi
 
 INNODB_IO_THREADS=$(( VCPUS < 4 ? 4 : VCPUS ))
 INNODB_READ_IO_THREADS=$INNODB_IO_THREADS
 INNODB_WRITE_IO_THREADS=$INNODB_IO_THREADS
 
 log "[INFO] Buffer pool size: ${INNODB_BUFFER_POOL_SIZE_MB}M"
-log "[INFO] Buffer pool instances: ${INNODB_BUFFER_POOL_INSTANCES}"
 log "[INFO] Log file size: ${INNODB_LOG_FILE_SIZE_MB}M"
 log "[INFO] Max connections: ${MAX_CONNECTIONS}"
 log "[INFO] tmp_table_size/max_heap_table_size: ${TMP_TABLE_SIZE_MB}M"
@@ -405,6 +523,7 @@ log "[INFO] InnoDB IO threads (read/write): ${INNODB_READ_IO_THREADS}/${INNODB_W
 if [ -f "${MARIADB_FRAG}" ]; then
   log "[RUN] backup existing MariaDB fragment -> ${MARIADB_FRAG}.bak.${TIMESTAMP}"
   [ "$DRY_RUN" -eq 0 ] && cp -a "${MARIADB_FRAG}" "${MARIADB_FRAG}.bak.${TIMESTAMP}"
+  prune_baks "${MARIADB_FRAG}"
 fi
 
 MARIADB_FRAG_TMP="${MARIADB_FRAG}.tmp"
@@ -412,7 +531,6 @@ cat > "${MARIADB_FRAG_TMP}" <<EOF
 # universal generated - ${TIMESTAMP}
 [mysqld]
 innodb_buffer_pool_size = ${INNODB_BUFFER_POOL_SIZE_MB}M
-innodb_buffer_pool_instances = ${INNODB_BUFFER_POOL_INSTANCES}
 innodb_log_file_size = ${INNODB_LOG_FILE_SIZE_MB}M
 innodb_read_io_threads = ${INNODB_READ_IO_THREADS}
 innodb_write_io_threads = ${INNODB_WRITE_IO_THREADS}
@@ -431,8 +549,27 @@ if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$(dirname "${MARIADB_FRAG}")"
   mv -f "${MARIADB_FRAG_TMP}" "${MARIADB_FRAG}"
   log "[OK] MariaDB config fragment written to ${MARIADB_FRAG}"
+
+  # Apply the tunables live: on MariaDB 10.11 every one of these is dynamic
+  # (including online buffer pool and redo log resize), so a restart -- and
+  # the cold-cache morning that follows it -- is unnecessary. The fragment
+  # above only guarantees persistence across the next natural restart.
+  if "${MYSQL_CMD[@]}" -e "
+      SET GLOBAL innodb_buffer_pool_size = ${INNODB_BUFFER_POOL_SIZE_BYTES};
+      SET GLOBAL innodb_log_file_size = ${INNODB_LOG_FILE_SIZE_BYTES};
+      SET GLOBAL max_connections = ${MAX_CONNECTIONS};
+      SET GLOBAL tmp_table_size = $(( TMP_TABLE_SIZE_MB * 1024 * 1024 ));
+      SET GLOBAL max_heap_table_size = $(( TMP_TABLE_SIZE_MB * 1024 * 1024 ));
+      SET GLOBAL innodb_flush_log_at_trx_commit = 2;
+  " 2>>"${LOG}"; then
+    log "[OK] dynamic MariaDB settings applied live -- no restart required"
+  else
+    log "[WARN] live SET GLOBAL failed; settings apply at next MariaDB restart"
+  fi
+  log "[INFO] innodb_read/write_io_threads are static and apply at the next planned restart"
 else
   log "[DRY] would write MariaDB config fragment -> ${MARIADB_FRAG}"
+  log "[DRY] would apply dynamic settings live via SET GLOBAL (no restart)"
   rm -f "${MARIADB_FRAG_TMP}" || true
 fi
 
@@ -447,20 +584,36 @@ log "------------------------"
 
 VALKEY_CONF="/etc/valkey/valkey.conf"
 if [ -f "$VALKEY_CONF" ]; then
-  VALKEY_MB=$(( RAM_MB * 15 / 100 ))
-  [ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
-  
+  # VALKEY_MB comes from the CAPACITY MODEL block.
   log "[INFO] Valkey maxmemory: ${VALKEY_MB}M"
   
   if [ "$DRY_RUN" -eq 0 ]; then
     cp -a "$VALKEY_CONF" "${VALKEY_CONF}.bak.${TIMESTAMP}"
+    prune_baks "$VALKEY_CONF"
     sed -i -E "s/^#?maxmemory .*/maxmemory ${VALKEY_MB}mb/" "$VALKEY_CONF"
     if ! grep -q "^maxmemory-policy" "$VALKEY_CONF"; then
       echo "maxmemory-policy volatile-lru" >> "$VALKEY_CONF"
     fi
     log "[OK] Valkey configured with maxmemory ${VALKEY_MB}mb and volatile-lru"
+
+    # Apply live via valkey-cli so no restart (and no cache flush) is needed;
+    # the config file edit above keeps the value across future restarts.
+    # NOTE: valkey-cli exits 0 even when the server replies ERR (this box
+    # rename-disables CONFIG), so verify the live value via INFO instead of
+    # trusting the exit code.
+    if command -v valkey-cli >/dev/null 2>&1; then
+      valkey-cli CONFIG SET maxmemory "${VALKEY_MB}mb" >/dev/null 2>&1 || true
+      valkey-cli CONFIG SET maxmemory-policy volatile-lru >/dev/null 2>&1 || true
+      LIVE_MM=$(valkey-cli INFO memory 2>/dev/null | tr -d '\r' | awk -F: '/^maxmemory:/{print $2}')
+      TARGET_MM=$(( VALKEY_MB * 1024 * 1024 ))
+      if [ "${LIVE_MM:-0}" = "${TARGET_MM}" ]; then
+        log "[OK] Valkey live maxmemory verified at ${VALKEY_MB}mb -- no restart required"
+      else
+        log "[WARN] Valkey live maxmemory=${LIVE_MM:-unknown} (target ${TARGET_MM}); CONFIG is disabled here -- new value applies at next Valkey restart"
+      fi
+    fi
   else
-    log "[DRY] would tune Valkey maxmemory to ${VALKEY_MB}mb and volatile-lru"
+    log "[DRY] would tune Valkey maxmemory to ${VALKEY_MB}mb and volatile-lru (live via valkey-cli, no restart)"
   fi
 else
   log "[WARN] Valkey config not found at $VALKEY_CONF, skipping"
@@ -484,16 +637,18 @@ for p in "${RADIUS_PATHS[@]}"; do
   fi
 done
 
+RADIUS_CHANGED=0
 if [ -z "${RADIUS_CONF}" ]; then
   log "[WARN] radiusd.conf not found in common paths; skipping thread-pool edit."
 else
   START_SERVERS=$(( VCPUS / 2 )); [ "$START_SERVERS" -lt 2 ] && START_SERVERS=2
-  MAX_SERVERS=$(( VCPUS * 6 ))
+  MAX_SERVERS=$RAD_MAX_SERVERS   # from the CAPACITY MODEL ([12..128])
   MIN_SPARE=$(( VCPUS / 2 )); [ "$MIN_SPARE" -lt 2 ] && MIN_SPARE=2
   MAX_SPARE=$(( VCPUS * 2 )); [ "$MAX_SPARE" -lt "$MIN_SPARE" ] && MAX_SPARE=$MIN_SPARE
 
   log "[RUN] Using radiusd.conf: ${RADIUS_CONF}"
   [ "$DRY_RUN" -eq 0 ] && cp -a "${RADIUS_CONF}" "${RADIUS_CONF}.bak.${TIMESTAMP}"
+  prune_baks "${RADIUS_CONF}"
   TMP_RAD="${RADIUS_CONF}.new"
   awk -v s="${START_SERVERS}" -v m="${MAX_SERVERS}" -v minsp="${MIN_SPARE}" -v maxsp="${MAX_SPARE}" '
     BEGIN{inblock=0}
@@ -509,11 +664,26 @@ else
   ' "${RADIUS_CONF}" > "${TMP_RAD}" || true
 
   if [ "$DRY_RUN" -eq 0 ]; then
-    mv -f "${TMP_RAD}" "${RADIUS_CONF}"
-    log "[OK] radiusd.conf thread pool updated (backup: ${RADIUS_CONF}.bak.${TIMESTAMP})"
+    if cmp -s "${RADIUS_CONF}" "${TMP_RAD}"; then
+      # Nothing to do -- values already match; avoids a pointless restart.
+      rm -f "${TMP_RAD}" || true
+      log "[OK] radiusd.conf thread pool already tuned; no change, no restart needed"
+    else
+      mv -f "${TMP_RAD}" "${RADIUS_CONF}"
+      # Validate BEFORE deciding to restart; a broken config must never
+      # reach a running RADIUS service. Roll back on validation failure.
+      RAD_BIN="$(command -v freeradius || command -v radiusd || true)"
+      if [ -n "${RAD_BIN}" ] && ! "${RAD_BIN}" -XC >/dev/null 2>&1; then
+        log "[ERROR] new radiusd.conf FAILED validation (${RAD_BIN} -XC); restoring backup, skipping restart"
+        cp -a "${RADIUS_CONF}.bak.${TIMESTAMP}" "${RADIUS_CONF}"
+      else
+        RADIUS_CHANGED=1
+        log "[OK] radiusd.conf thread pool updated and validated (backup: ${RADIUS_CONF}.bak.${TIMESTAMP})"
+      fi
+    fi
   else
     rm -f "${TMP_RAD}" || true
-    log "[DRY] would update radiusd.conf thread pool"
+    log "[DRY] would update radiusd.conf thread pool (validated with -XC, restart only if changed)"
   fi
 fi
 
@@ -644,41 +814,14 @@ else
 
   # If pool file exists, compute values and do in-place replacements
   if [ -f "$POOL_CONF" ]; then
-    # Compute recommended values
-    CPU_CORES=$(nproc --all 2>/dev/null || echo 1)
-    TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-    # Match the global budget strategy: 15% OS + 40% DB + 15% Cache
-    OS_RESERVE_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
-    [ "$OS_RESERVE_MB" -lt 1024 ] && OS_RESERVE_MB=1024
-    MARIADB_POOL_MB=$(( TOTAL_RAM_MB * 40 / 100 ))
-    [ "$MARIADB_POOL_MB" -lt 256 ] && MARIADB_POOL_MB=256
-    VALKEY_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
-    [ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
-    
-    RESERVE_MB=$(( OS_RESERVE_MB + MARIADB_POOL_MB + VALKEY_MB ))
-    AVAILABLE_FOR_PHP_MB=$(( TOTAL_RAM_MB - RESERVE_MB ))
-    [ "$AVAILABLE_FOR_PHP_MB" -lt 256 ] && AVAILABLE_FOR_PHP_MB=256
-
-    # Determine avg worker RSS (best-effort)
-    PHPFPM_PROCNAMES=("php-fpm${PHP_VER_DETECTED}" "php${PHP_VER_DETECTED}-fpm" "php-fpm" "php7.4-fpm" "php8.1-fpm" "php8.2-fpm")
-    FOUND_PROCNAME=""
-    for pn in "${PHPFPM_PROCNAMES[@]}"; do
-      if pgrep -x "$pn" >/dev/null 2>&1; then FOUND_PROCNAME="$pn"; break; fi
-    done
-    AVG_RSS_KB=0
-    if [ -n "$FOUND_PROCNAME" ]; then
-      AVG_RSS_KB=$(ps --no-headers -o rss -C "$FOUND_PROCNAME" 2>/dev/null | awk '{s+=$1;n++}END{if(n)printf "%.0f",s/n;else print 0}')
-    fi
-    if [ -z "${AVG_RSS_KB}" ] || [ "$AVG_RSS_KB" -le 0 ]; then
-      AVG_RSS_MB=50
-      AVG_RSS_KB=$((AVG_RSS_MB * 1024))
-    else
-      AVG_RSS_MB=$(( (AVG_RSS_KB + 1023) / 1024 ))
-    fi
-
-    MAX_CHILDREN=$(( AVAILABLE_FOR_PHP_MB / AVG_RSS_MB ))
-    [ "$MAX_CHILDREN" -lt 2 ] && MAX_CHILDREN=2
-    [ "$MAX_CHILDREN" -gt 1000 ] && MAX_CHILDREN=1000
+    # Worker count comes from the CAPACITY MODEL block near the top
+    # (MAX_CHILDREN = PHP_BUDGET_MB / WORKER_COST_MB, clamped [32..480]).
+    # Do NOT size from measured RSS: worker RSS (~57MB) is mostly shared
+    # opcache and undercounts capacity ~4x. The vendor portal long-polls
+    # payment status with usleep() (vendor report issue #4), pinning one
+    # worker per waiting payer - worker count IS the capacity currency.
+    CPU_CORES=$VCPUS
+    TOTAL_RAM_MB=$RAM_MB
     PM_START=$(( MAX_CHILDREN * 20 / 100 ))
     PM_MIN=$(( MAX_CHILDREN * 10 / 100 ))
     PM_MAX=$(( MAX_CHILDREN * 30 / 100 ))
@@ -702,7 +845,7 @@ else
           log "[DRY] would replace ${key} = ${val} in ${file}"
         fi
       else
-        # No existing line â€” insert after anchor (anchor is anchor key, e.g., 'pm' for 'pm = dynamic')
+        # No existing line - insert after anchor (anchor is anchor key, e.g., 'pm' for 'pm = dynamic')
         if [ -n "$anchor" ] && grep -qE "^[[:space:]]*${anchor}[[:space:]]*=" "$file"; then
           if [ "$DRY_RUN" -eq 0 ]; then
             awk -v a="$anchor" -v newline="${key} = ${val}" '{
@@ -742,6 +885,8 @@ else
     ensure_directive "$POOL_CONF" "slowlog" "${SLOWLOG_PATH}" "pm"
     ensure_directive "$POOL_CONF" "pm.status_path" "${STATUS_PATH}" "pm"
     ensure_directive "$POOL_CONF" "catch_workers_output" "${CATCH_WORKERS_OUTPUT}" "pm"
+    # Deeper accept queue for login bursts (default 511 drops under spikes)
+    ensure_directive "$POOL_CONF" "listen.backlog" "1024" "pm"
 
     if [ "$DRY_RUN" -eq 0 ]; then
       chmod 640 "$POOL_CONF" || true
@@ -750,35 +895,44 @@ else
       log "[DRY] would update pool file in-place (max_children=${MAX_CHILDREN})"
     fi
 
-    # Reload/restart php-fpm
+    # Reload php-fpm ONLY if the pool file actually changed, and only after
+    # php-fpm's own config test passes. A failed test restores the backup.
     if [ "$DRY_RUN" -eq 0 ]; then
-      if systemctl reload "$PHPFPM_SERVICE" >/dev/null 2>&1; then
-        log "[OK] Reloaded $PHPFPM_SERVICE successfully."
+      if [ -f "$PHPFPM_POOL_BAK" ] && cmp -s "$POOL_CONF" "$PHPFPM_POOL_BAK"; then
+        log "[OK] pool config unchanged; skipping php-fpm reload"
       else
-        log "[WARN] Reload failed; attempting restart..."
-        if systemctl restart "$PHPFPM_SERVICE" >/dev/null 2>&1; then
-          log "[OK] Restarted $PHPFPM_SERVICE successfully."
+        FPM_BIN="$(command -v "php-fpm${PHP_VER_DETECTED}" || true)"
+        if [ -n "$FPM_BIN" ] && ! "$FPM_BIN" -t >/dev/null 2>&1; then
+          log "[ERROR] php-fpm config test FAILED; restoring ${PHPFPM_POOL_BAK}, skipping reload"
+          cp -a "$PHPFPM_POOL_BAK" "$POOL_CONF"
+        elif systemctl reload "$PHPFPM_SERVICE" >/dev/null 2>&1; then
+          log "[OK] Reloaded $PHPFPM_SERVICE successfully (config test passed)."
         else
-          log "[ERROR] Restart failed, please check $PHPFPM_SERVICE and logs manually."
+          log "[WARN] Reload failed; attempting restart..."
+          if systemctl restart "$PHPFPM_SERVICE" >/dev/null 2>&1; then
+            log "[OK] Restarted $PHPFPM_SERVICE successfully."
+          else
+            log "[ERROR] Restart failed, please check $PHPFPM_SERVICE and logs manually."
+          fi
         fi
       fi
     else
-      log "[DRY] would reload/restart $PHPFPM_SERVICE"
+      log "[DRY] would config-test and reload $PHPFPM_SERVICE only if pool file changed"
     fi
 
     # Write suggestion report
     cat > "$PHPFPM_SUGGESTION_FILE" <<EOF
-PHP-FPM replacement report â€” $(date)
+PHP-FPM replacement report (capacity model v3) - $(date)
 ----------------------------------
 Detection method  : ${DETECTION_METHOD:-unknown}
 PHP-FPM service   : ${PHPFPM_SERVICE}
-Detected process  : ${FOUND_PROCNAME:-unknown}
 Detected PHP ver  : ${PHP_VER_DETECTED}
 CPU cores         : ${CPU_CORES}
 Total RAM         : ${TOTAL_RAM_MB} MB
-Reserved (OS/etc) : ${RESERVE_MB} MB
-Available for PHP : ${AVAILABLE_FOR_PHP_MB} MB
-Avg worker RSS    : ${AVG_RSS_MB} MB
+OS reserve        : ${OS_RESERVE_MB} MB
+MariaDB footprint : ${MARIADB_FOOTPRINT_MB} MB (pool ${POOL_MB}M x1.3)
+Valkey cap        : ${VALKEY_MB} MB
+PHP budget        : ${PHP_BUDGET_MB} MB @ ${WORKER_COST_MB} MB/worker
 pm.max_children   : ${MAX_CHILDREN}
 start/min/max     : ${PM_START} / ${PM_MIN} / ${PM_MAX}
 pm.max_requests   : ${PM_MAX_REQUESTS}
@@ -798,10 +952,14 @@ fi
 log ""
 
 # -------------------------------------------------------------
-# Step 8: Restart services (MariaDB/mysql, FreeRADIUS, php-fpm)
+# Step 8: Conditional service application
+#   MariaDB : tuned live via SET GLOBAL in Step 5 - never restarted here
+#   Valkey  : tuned live via valkey-cli in Step 5b - never restarted here
+#   PHP-FPM : reloaded in Step 7 only if its pool config changed
+#   FreeRADIUS: restarted below only if radiusd.conf changed AND validated
 # -------------------------------------------------------------
 log "========================"
-log " Step 8: Restart services to apply changes"
+log " Step 8: Apply service changes (only what actually changed)"
 log "------------------------"
 
 restart_and_check() {
@@ -847,53 +1005,23 @@ restart_and_check() {
   fi
 }
 
-MARIADB_RESTARTED=0
-for candidate in mariadb mysql mysqld; do
-  if restart_and_check "$candidate"; then
-    MARIADB_RESTARTED=1
-    break
-  fi
-done
-if [ "$MARIADB_RESTARTED" -eq 0 ]; then
-  log "[WARN] MariaDB/MySQL restart not confirmed; ensure correct service name (mariadb/mysql/mysqld)"
-fi
+log "[OK] MariaDB: dynamic settings already applied live (Step 5); no restart"
+log "[OK] Valkey: settings already applied live (Step 5b); no restart"
+log "[OK] PHP-FPM: reload handled in Step 7 (only when pool config changed)"
 
-RAD_RESTARTED=0
-for candidate in freeradius radiusd; do
-  if restart_and_check "$candidate"; then
-    RAD_RESTARTED=1
-    break
-  fi
-done
-if [ "$RAD_RESTARTED" -eq 0 ]; then
-  log "[WARN] FreeRADIUS restart not confirmed; check OS packaging (freeradius or radiusd)"
-fi
-
-VALKEY_RESTARTED=0
-for candidate in valkey-server valkey; do
-  if restart_and_check "$candidate"; then
-    VALKEY_RESTARTED=1
-    break
-  fi
-done
-if [ "$VALKEY_RESTARTED" -eq 0 ]; then
-  log "[WARN] Valkey restart not confirmed; check OS packaging"
-fi
-
-if [ -n "${PHPFPM_SERVICE:-}" ]; then
-  restart_and_check "$PHPFPM_SERVICE"
-fi
-
-PHP_FPM_UNITS=$(systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' || true)
-if [ -n "$PHP_FPM_UNITS" ]; then
-  for u in $PHP_FPM_UNITS; do
-    svcname="${u%.service}"
-    restart_and_check "$svcname"
+if [ "${RADIUS_CHANGED:-0}" -eq 1 ]; then
+  RAD_RESTARTED=0
+  for candidate in freeradius radiusd; do
+    if restart_and_check "$candidate"; then
+      RAD_RESTARTED=1
+      break
+    fi
   done
+  if [ "$RAD_RESTARTED" -eq 0 ]; then
+    log "[WARN] FreeRADIUS restart not confirmed; check OS packaging (freeradius or radiusd)"
+  fi
 else
-  for ver in 8.2 8.1 8.0 7.4 7.3; do
-    restart_and_check "php${ver}-fpm"
-  done
+  log "[OK] FreeRADIUS: config unchanged (or rolled back); no restart"
 fi
 
 log ""

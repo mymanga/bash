@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # Setup logging and error handling
 INSTALL_LOG="/root/install.txt"
@@ -10,14 +10,26 @@ DOMAIN=$(hostname -f)
 EMAIL_ADDRESS="simpluxsolutions@gmail.com"
 
 # Configuration variables - ONLY DIFFERENCES BETWEEN SCRIPTS
-GITHUB_REPO_URL="https://github.com/simpleisp/radius.git"
-PHP_VERSION="7.4"
+GITHUB_REPO_URL="https://github.com/simpleisp/simplespot.git"
+PHP_VERSION="8.2"
 
 # Logging functions
-log_info() { echo "ℹ️  INFO: $1" | tee -a "$INSTALL_LOG"; }
-log_success() { echo "✅ SUCCESS: $1" | tee -a "$INSTALL_LOG"; }
-log_error() { echo "❌ ERROR: $1" | tee -a "$INSTALL_LOG"; }
-log_step() { STEP_COUNT=$((STEP_COUNT + 1)); echo "👉 STEP $STEP_COUNT: $1" | tee -a "$INSTALL_LOG"; }
+log_info() {
+    echo "ℹ️  INFO: $1" | tee -a "$INSTALL_LOG"
+}
+
+log_success() {
+    echo "✅ SUCCESS: $1" | tee -a "$INSTALL_LOG"
+}
+
+log_error() {
+    echo "❌ ERROR: $1" | tee -a "$INSTALL_LOG"
+}
+
+log_step() {
+    STEP_COUNT=$((STEP_COUNT + 1))
+    echo "👉 STEP $STEP_COUNT: $1" | tee -a "$INSTALL_LOG"
+}
 
 handle_error() {
     log_error "$1"
@@ -61,7 +73,9 @@ fi
 
 # Ensure script runs as root
 log_step "Checking root privileges"
-if [ "$EUID" -ne 0 ]; then handle_error "Please run as root"; fi
+if [ "$EUID" -ne 0 ]; then
+    handle_error "Please run as root"
+fi
 COMPLETED_STEPS+=("Root check passed")
 
 # Get Ubuntu version
@@ -110,10 +124,18 @@ printf 'Package: /freeradius/\nPin: origin "packages.networkradius.com"\nPin-Pri
 
 # Add NetworkRADIUS repository based on Ubuntu version
 case $UBUNTU_VERSION in
-    "noble") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/noble noble main" ;;
-    "jammy") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/jammy jammy main" ;;
-    "focal") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/focal focal main" ;;
-    *) handle_error "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
+    "noble")
+        REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/noble noble main"
+        ;;
+    "jammy")
+        REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/jammy jammy main"
+        ;;
+    "focal")
+        REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/focal focal main"
+        ;;
+    *)
+        handle_error "Unsupported Ubuntu version: $UBUNTU_VERSION"
+        ;;
 esac
 
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.networkradius.com.asc] $REPO_URL" | sudo tee /etc/apt/sources.list.d/networkradius.list > /dev/null || handle_error "Failed to add NetworkRADIUS repository"
@@ -129,20 +151,101 @@ apt-get update || handle_error "Failed to update package lists"
 apt-get upgrade -y || handle_error "Failed to upgrade packages"
 COMPLETED_STEPS+=("System packages updated")
 
-# Install required packages (Cleaned virtual PHP packages and freeradius-rest)
+# Install required packages
 log_step "Installing required packages"
-INSTALL_PACKAGES="nginx-full python3-certbot-nginx php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-cli php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-common php${PHP_VERSION}-gd php${PHP_VERSION}-mbstring php${PHP_VERSION}-xml php${PHP_VERSION}-dev php${PHP_VERSION}-bcmath php${PHP_VERSION}-intl php${PHP_VERSION}-redis git unzip curl wget software-properties-common apt-transport-https ca-certificates gnupg lsb-release supervisor valkey-server valkey-tools valkey-redis-compat valkey-sentinel ufw openvpn easy-rsa freeradius freeradius-mysql freeradius-utils mariadb-server mariadb-client"
-
 if [ "$REINSTALL" = true ]; then
     log_info "Reinstalling packages (forcing configuration file replacement)"
-    apt-get install --reinstall -y -o Dpkg::Options::="--force-confmiss" $INSTALL_PACKAGES || handle_error "Failed to reinstall packages"
+    apt-get install --reinstall -y -o Dpkg::Options::="--force-confmiss" \
+        nginx-full \
+        python3-certbot-nginx \
+        php${PHP_VERSION}-fpm \
+        php${PHP_VERSION}-mysql \
+        php${PHP_VERSION}-cli \
+        php${PHP_VERSION}-curl \
+        php${PHP_VERSION}-zip \
+        php${PHP_VERSION}-common \
+        php${PHP_VERSION}-gd \
+        php${PHP_VERSION}-mbstring \
+        php${PHP_VERSION}-xml \
+        php${PHP_VERSION}-dev \
+        php${PHP_VERSION}-bcmath \
+        php${PHP_VERSION}-intl \
+        php${PHP_VERSION}-redis \
+        php${PHP_VERSION}-tokenizer \
+        php${PHP_VERSION}-ctype \
+        php${PHP_VERSION}-fileinfo \
+        git \
+        unzip \
+        curl \
+        wget \
+        software-properties-common \
+        apt-transport-https \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        supervisor \
+        valkey-server \
+        valkey-tools \
+        valkey-redis-compat \
+        valkey-sentinel \
+        ufw \
+        openvpn \
+        easy-rsa \
+        freeradius \
+        freeradius-mysql \
+        freeradius-utils \
+        freeradius-rest \
+        mariadb-server \
+        mariadb-client || handle_error "Failed to reinstall packages"
 else
-    apt-get install -y $INSTALL_PACKAGES || handle_error "Failed to install packages"
+    apt-get install -y \
+        nginx-full \
+        python3-certbot-nginx \
+        php${PHP_VERSION}-fpm \
+        php${PHP_VERSION}-mysql \
+        php${PHP_VERSION}-cli \
+        php${PHP_VERSION}-curl \
+        php${PHP_VERSION}-zip \
+        php${PHP_VERSION}-common \
+        php${PHP_VERSION}-gd \
+        php${PHP_VERSION}-mbstring \
+        php${PHP_VERSION}-xml \
+        php${PHP_VERSION}-dev \
+        php${PHP_VERSION}-bcmath \
+        php${PHP_VERSION}-intl \
+        php${PHP_VERSION}-redis \
+        php${PHP_VERSION}-tokenizer \
+        php${PHP_VERSION}-ctype \
+        php${PHP_VERSION}-fileinfo \
+        git \
+        unzip \
+        curl \
+        wget \
+        software-properties-common \
+        apt-transport-https \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        supervisor \
+        valkey-server \
+        valkey-tools \
+        valkey-redis-compat \
+        valkey-sentinel \
+        ufw \
+        openvpn \
+        easy-rsa \
+        mariadb-server \
+        mariadb-client \
+        freeradius \
+        freeradius-mysql \
+        freeradius-utils \
+        freeradius-rest || handle_error "Failed to install packages"
 fi
 COMPLETED_STEPS+=("Required packages installed")
 
 # Configure Valkey service overrides
 log_step "Configuring Valkey service overrides"
+
 VKEY_OVERRIDE_DIR="/etc/systemd/system/valkey.service.d"
 VKEY_OVERRIDE_FILE="${VKEY_OVERRIDE_DIR}/override.conf"
 
@@ -166,15 +269,19 @@ EOF
 # Apply changes and restart Valkey
 log_info "Applying Valkey service configuration..."
 
-# Configure Valkey with optimized settings for FreeRADIUS
+# Configure Valkey with optimal settings for FreeRADIUS
 log_step "Configuring Valkey with optimized settings"
 
-# Calculate optimal memory allocation (Safe 15% of available RAM, capped at 3GB, minimum 1GB)
+# Calculate optimal memory allocation (75% of available RAM, capped at 3GB, minimum 1GB)
 TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 TOTAL_RAM_MB=$((TOTAL_RAM_KB / 1024))
-MAX_MEMORY_MB=$((TOTAL_RAM_MB * 15 / 100))
-if [ "$MAX_MEMORY_MB" -gt 3072 ]; then MAX_MEMORY_MB=3072; fi
-if [ "$MAX_MEMORY_MB" -lt 1024 ]; then MAX_MEMORY_MB=1024; fi
+MAX_MEMORY_MB=$((TOTAL_RAM_MB * 75 / 100))
+if [ "$MAX_MEMORY_MB" -gt 3072 ]; then
+    MAX_MEMORY_MB=3072  # Cap at 3GB
+fi
+if [ "$MAX_MEMORY_MB" -lt 1024 ]; then
+    MAX_MEMORY_MB=1024  # Minimum 1GB
+fi
 
 log_info "Configuring Valkey with ${MAX_MEMORY_MB}MB memory allocation"
 
@@ -184,6 +291,7 @@ mkdir -p /etc/valkey || handle_error "Failed to create Valkey configuration dire
 # Configure Valkey with optimized settings for FreeRADIUS
 cat > /etc/valkey/valkey.conf << EOL
 # Valkey configuration for FreeRADIUS
+
 bind 0.0.0.0 ::0
 protected-mode yes
 port 6379
@@ -222,7 +330,8 @@ dbfilename dump.rdb
 # Disable RDB snapshots since we're using AOF
 save ""
 
-# Security (Reuse the same password as MySQL for simplicity)
+# Security
+# Reuse the same password as MySQL for simplicity
 requirepass "$MYSQL_PASSWORD"
 
 # Network
@@ -231,6 +340,8 @@ repl-timeout 60
 repl-ping-slave-period 10
 repl-backlog-size 1mb
 repl-backlog-ttl 3600
+
+# Client timeouts
 timeout 0
 tcp-keepalive 300
 
@@ -240,23 +351,39 @@ rename-command FLUSHALL ""
 rename-command CONFIG ""
 rename-command SHUTDOWN ""
 
-# Tune threads and clients
+# Set the number of threads to serve the requests
 io-threads 2
 io-threads-do-reads yes
+
+# Set the max number of connected clients at the same time
 maxclients 10000
 
-# Tune data structures
+# Set the threshold for keys with an expire set to be considered for deletion
 active-expire-effort 1
+
+# Set the threshold for client output buffer limits
 client-output-buffer-limit normal 0 0 0
 client-output-buffer-limit replica 256mb 64mb 60
 client-output-buffer-limit pubsub 32mb 8mb 60
+
+# Tune hash data structure
 hash-max-ziplist-entries 512
 hash-max-ziplist-value 64
+
+# Tune list data structure
 list-max-ziplist-size -2
+
+# Tune set data structure
 set-max-intset-entries 512
+
+# Tune zset data structure
 zset-max-ziplist-entries 128
 zset-max-ziplist-value 64
+
+# Tune hll data structure
 hll-sparse-max-bytes 3000
+
+# Tune stream data structure
 stream-node-max-bytes 4096
 stream-node-max-entries 100
 
@@ -269,6 +396,22 @@ active-defrag-cycle-max 75
 active-defrag-max-scan-fields 1000
 EOL
 
+# Set proper permissions for Valkey directories
+# log_step "Setting Valkey directory permissions"
+# mkdir -p /var/lib/valkey/appendonlydir
+# chown -R valkey:valkey /var/lib/valkey /var/log/valkey /var/run/valkey
+# chmod 750 /var/lib/valkey /var/log/valkey /var/run/valkey
+
+# Fix Valkey service
+#sed -i 's/ConditionPathExists=!\/etc\/valkey\/REDIS_MIGRATION/ConditionPathExists=\/etc\/valkey\/REDIS_MIGRATION/g' /usr/lib/systemd/system/valkey-server.service
+#touch /etc/valkey/REDIS_MIGRATION
+
+# # Set permissions for AOF directory if it exists
+# if [ -d "/var/lib/valkey/appendonlydir" ]; then
+#     chmod 750 /var/lib/valkey/appendonlydir
+#     chown -R valkey:valkey /var/lib/valkey/appendonlydir
+# fi
+
 # Restart Valkey to apply new configuration
 systemctl daemon-reexec || log_warning "daemon-reexec failed (non-critical)"
 systemctl daemon-reload || handle_error "Failed to reload systemd daemon"
@@ -277,18 +420,23 @@ systemctl enable valkey-server || handle_error "Failed to enable Valkey"
 
 # Verify Valkey is running
 log_step "Verifying Valkey service status"
+
+# Check service status
 if systemctl is-active --quiet valkey-server; then
     log_success "Valkey service is running"
     COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
 else
+    # If service is not running, try to get more information
     log_warning "Valkey service is not running as expected. Checking status..."
     systemctl status valkey-server --no-pager || true
     
+    # Try to start the service
     log_info "Attempting to start Valkey service..."
     if systemctl start valkey-server; then
         log_success "Successfully started Valkey service"
         COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
     else
+        # If we still can't start, show detailed error but don't fail the script
         log_error "Failed to start Valkey service. Please check the logs with: journalctl -u valkey-server -n 50"
         log_warning "Continuing installation despite Valkey service issue..."
         COMPLETED_STEPS+=("Valkey configuration completed but service failed to start")
@@ -308,26 +456,52 @@ systemctl status valkey --no-pager -l
 
 echo -e "\n=== Valkey Key Statistics ==="
 echo "Total Keys in DB 0: $(valkey-cli -h $VALKEY_HOST -p $VALKEY_PORT dbsize)"
+
 EOF
 
-chmod +x /usr/local/bin/valkey-debug.sh || handle_error "Failed to make Valkey debug script executable"
+chmod +x /usr/local/bin/valkey-debug.sh
+
 COMPLETED_STEPS+=("Valkey monitoring configured")
 
-# Add monitoring cron job (Safe Append Fix)
+# Add monitoring cron job
 log_step "Adding monitoring cron job"
-(crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/valkey-debug.sh") | crontab - || handle_error "Failed to install monitoring cron job"
+echo "*/5 * * * * /usr/local/bin/valkey-debug.sh" > cronjob || handle_error "Failed to write monitoring cron job to temporary file"
+crontab cronjob || handle_error "Failed to install monitoring cron job"
+rm cronjob || handle_error "Failed to remove temporary monitoring cron job file"
 COMPLETED_STEPS+=("Monitoring cron job added")
 
 # Verify Valkey is working
 log_step "Verifying Valkey installation"
-if ! systemctl is-active --quiet valkey; then handle_error "Valkey service is not running"; fi
+if ! systemctl is-active --quiet valkey; then
+handle_error "Valkey service is not running"
+fi
 
 # Test Valkey connectivity and basic operations
-if [ "$(valkey-cli ping)" != "PONG" ]; then handle_error "Valkey is not responding to ping"; fi
-if [ "$(valkey-cli set test_key test_value)" != "OK" ]; then handle_error "Valkey write operation failed"; fi
-if [ "$(valkey-cli get test_key)" != "test_value" ]; then handle_error "Valkey read operation failed"; fi
-if [ "$(valkey-cli del test_key)" != "1" ]; then handle_error "Valkey delete operation failed"; fi
-if ! valkey-cli info | grep -q "valkey_version"; then handle_error "Unable to get Valkey server information"; fi
+if [ "$(valkey-cli ping)" != "PONG" ]; then
+handle_error "Valkey is not responding to ping"
+fi
+
+# Test Valkey write operation
+if [ "$(valkey-cli set test_key test_value)" != "OK" ]; then
+handle_error "Valkey write operation failed"
+fi
+
+# Test Valkey read operation
+TEST_VALUE=$(valkey-cli get test_key)
+if [ "$TEST_VALUE" != "test_value" ]; then
+handle_error "Valkey read operation failed"
+fi
+
+# Test Valkey delete operation
+if [ "$(valkey-cli del test_key)" != "1" ]; then
+handle_error "Valkey delete operation failed"
+fi
+
+# Check Valkey info for basic stats
+if ! valkey-cli info | grep -q "valkey_version"; then
+handle_error "Unable to get Valkey server information"
+fi
+
 COMPLETED_STEPS+=("Valkey functionality verified")
 
 # Set Default PHP Version
@@ -337,16 +511,27 @@ COMPLETED_STEPS+=("PHP ${PHP_VERSION} set as default")
 
 # Install and configure ionCube Loader
 log_step "Installing ionCube Loader"
+
+# Check if ionCube is already installed
 if [ -d "/usr/local/ioncube" ] && [ -f "/usr/local/ioncube/ioncube_loader_lin_${PHP_VERSION}.so" ]; then
     log_info "ionCube Loader already exists, skipping download and installation"
     COMPLETED_STEPS+=("ionCube Loader reused (already exists)")
 else
     log_info "ionCube Loader not found, downloading and installing"
+    
+    # Change to /tmp directory for downloads
     cd /tmp || handle_error "Failed to change to /tmp directory"
+    
+    # Download and extract ionCube
     wget -O ioncube.zip "https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.zip" || handle_error "Failed to download ionCube"
     unzip -q ioncube.zip || handle_error "Failed to extract ionCube"
+    
+    # Remove existing ionCube directory if it exists
     rm -rf /usr/local/ioncube 2>/dev/null
+    
+    # Move the ioncube directory to /usr/local
     mv ioncube /usr/local/ || handle_error "Failed to move ionCube to /usr/local"
+    
     COMPLETED_STEPS+=("ionCube Loader downloaded and installed")
 fi
 
@@ -358,6 +543,8 @@ EOL
 # Enable ionCube for PHP CLI and FPM
 ln -sf /etc/php/${PHP_VERSION}/mods-available/ioncube.ini /etc/php/${PHP_VERSION}/cli/conf.d/00-ioncube.ini || handle_error "Failed to enable ionCube for CLI"
 ln -sf /etc/php/${PHP_VERSION}/mods-available/ioncube.ini /etc/php/${PHP_VERSION}/fpm/conf.d/00-ioncube.ini || handle_error "Failed to enable ionCube for FPM"
+
+# Restart PHP-FPM to load ionCube
 systemctl restart php${PHP_VERSION}-fpm || handle_error "Failed to restart PHP-FPM"
 
 # Verify ionCube installation
@@ -370,6 +557,8 @@ fi
 
 # Start and enable MariaDB
 log_step "Configuring MariaDB"
+
+# Initialize MariaDB system database if not already done
 if [ ! -d "/var/lib/mysql/mysql" ]; then
     log_info "Initializing MariaDB system database"
     mysql_install_db --user=mysql --datadir=/var/lib/mysql || handle_error "Failed to initialize MariaDB"
@@ -383,60 +572,137 @@ if [ ! -f "/etc/mysql/debian-start" ]; then
     log_info "Creating missing /etc/mysql/debian-start script"
     cat > /etc/mysql/debian-start << 'EOF'
 #!/bin/bash
-if [ "$(id -u)" != "0" ]; then echo "This script must be run as root" 1>&2; exit 1; fi
-if ! /usr/bin/mysqladmin --defaults-file=/etc/mysql/debian.cnf ping > /dev/null 2>&1; then exit 0; fi
+# This script is executed by "/etc/init.d/mysql" on every (re)start.
+
+# Exit if the script is not being run by root
+if [ "$(id -u)" != "0" ]; then
+   echo "This script must be run as root" 1>&2
+   exit 1
+fi
+
+# Exit successfully if mysql is not running
+if ! /usr/bin/mysqladmin --defaults-file=/etc/mysql/debian.cnf ping > /dev/null 2>&1; then
+  exit 0
+fi
+
+# Exit successfully
 exit 0
 EOF
     chmod +x /etc/mysql/debian-start || handle_error "Failed to make debian-start executable"
     log_success "Created /etc/mysql/debian-start script"
 fi
+
 COMPLETED_STEPS+=("MariaDB initialized, started and enabled")
 
 # Configure MySQL to allow remote connections
 log_step "Configuring MySQL for remote connections"
-mkdir -p /etc/mysql/mariadb.conf.d/ || handle_error "Failed to create MariaDB conf directory"
 
+# Create MariaDB configuration directory if it doesn't exist
+mkdir -p /etc/mysql/mariadb.conf.d/
+
+# Configure MariaDB
 cat > /etc/mysql/mariadb.conf.d/50-server.cnf << 'EOL'
+#
+# These groups are read by MariaDB server.
+# Use it for options that only the server (but not clients) should see
+
+# this is read by the standalone daemon and embedded servers
 [server]
+
+# this is only for the mariadbd daemon
 [mariadbd]
+
+#
+# * Basic Settings
+#
+
 user                    = mysql
 pid-file                = /run/mysqld/mysqld.pid
 basedir                 = /usr
 datadir                 = /var/lib/mysql
 tmpdir                  = /tmp
+
+# Broken reverse DNS slows down connections considerably and name resolve is
+# safe to skip if there are no "host by domain name" access grants
 skip-external-locking
+
+# Bind to all interfaces for network access
 bind-address            = 0.0.0.0
+
+#
+# * Fine Tuning
+#
+
 key_buffer_size         = 16M
 max_allowed_packet      = 16M
 thread_stack            = 192K
 thread_cache_size       = 8
+
+# This replaces the startup script and checks MyISAM tables if needed
+# the first time they are touched
 myisam-recover-options  = BACKUP
+
+#
+# * Query Cache Configuration
+#
+
 query_cache_limit       = 1M
 query_cache_size        = 16M
+
+#
+# * Logging and Replication
+#
+
+# The following can be used as easy to replay backup logs or for replication.
 expire_logs_days        = 10
 max_binlog_size        = 100M
+
+#
+# * Character sets
+#
+
+# MariaDB default is now utf8 4-byte character set.
 character-set-server    = utf8mb4
 collation-server        = utf8mb4_general_ci
+
+#
+# * InnoDB Performance Optimizations
+#
+
+# Most important is to give InnoDB 80 % of the system RAM for buffer use:
 innodb_buffer_pool_size = 1G
 innodb_log_file_size = 256M
 innodb_flush_method = O_DIRECT
 innodb_flush_log_at_trx_commit = 2
 innodb_file_per_table = 1
+
+# this is only for embedded server
 [embedded]
+
+# This group is only read by MariaDB servers, not by MySQL.
+# If you use the same .cnf file for MySQL and MariaDB,
+# you can put MariaDB-only options here
 [mariadb]
+
 EOL
 
+# Restart MariaDB to apply changes
 systemctl restart mariadb || handle_error "Failed to restart MariaDB after configuration change"
 COMPLETED_STEPS+=("MySQL configured for remote connections")
 
 # Generate random credentials or reuse existing ones
 DB_CREDENTIALS_FILE="/root/db.txt"
+
+# Check if db.txt exists and contains valid credentials
 if [ -f "$DB_CREDENTIALS_FILE" ] && [ -r "$DB_CREDENTIALS_FILE" ]; then
     log_step "Found existing database credentials, reusing them"
+    
+    # Extract credentials from existing db.txt file
     MYSQL_USER=$(grep "^DB_USERNAME=" "$DB_CREDENTIALS_FILE" | cut -d'=' -f2)
     MYSQL_PASSWORD=$(grep "^DB_PASSWORD=" "$DB_CREDENTIALS_FILE" | cut -d'=' -f2)
     MYSQL_DATABASE=$(grep "^DB_DATABASE=" "$DB_CREDENTIALS_FILE" | cut -d'=' -f2)
     
+    # Validate that we got all required credentials
     if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ] && [ -n "$MYSQL_DATABASE" ]; then
         log_info "Reusing existing database credentials: User=$MYSQL_USER, Database=$MYSQL_DATABASE"
         COMPLETED_STEPS+=("Database credentials reused from existing file")
@@ -477,8 +743,13 @@ COMPLETED_STEPS+=("MariaDB installation secured")
 # Create database and user
 log_step "Creating database and user"
 mysql -e "CREATE DATABASE $MYSQL_DATABASE;" || handle_error "Failed to create database"
+
+# Create user with access from any host
 mysql -e "CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD';" || handle_error "Failed to create database user"
+
+# Grant privileges for all hosts
 mysql -e "GRANT ALL PRIVILEGES ON $MYSQL_DATABASE.* TO '$MYSQL_USER'@'%';" || handle_error "Failed to grant database privileges"
+
 mysql -e "FLUSH PRIVILEGES;" || handle_error "Failed to flush MariaDB privileges"
 COMPLETED_STEPS+=("Database and user created with full access")
 
@@ -495,12 +766,16 @@ COMPLETED_STEPS+=("Composer installed")
 
 # Configure Nginx
 log_step "Configuring Nginx"
-mv /etc/nginx/sites-available/default /etc/nginx/sites-available/default.bak || handle_error "Failed to backup default Nginx site"
-touch /etc/nginx/sites-available/default || handle_error "Failed to create new Nginx site"
-ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default || handle_error "Failed to symlink Nginx site"
 
+# Backup existing default site
+mv /etc/nginx/sites-available/default /etc/nginx/sites-available/default.bak
+touch /etc/nginx/sites-available/default
+ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
+# Configure Nginx
 cat > /etc/nginx/sites-available/default << EOL
 server {
+
     listen 80;
     listen [::]:80;
     
@@ -521,6 +796,7 @@ server {
     location ~ /\.ht {
         deny all;
     }
+
 }
 EOL
 COMPLETED_STEPS+=("Nginx configured")
@@ -529,6 +805,7 @@ COMPLETED_STEPS+=("Nginx configured")
 log_step "Configuring SSL with Certbot"
 echo "Configuring SSL certificate for $DOMAIN"
 
+# Check if SSL certificate already exists for this domain
 if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
     log_info "SSL certificate already exists for $DOMAIN, reusing existing certificate"
     echo -e "1\n" | certbot --nginx -d "$DOMAIN" || handle_error "Failed to reuse SSL certificate"
@@ -539,21 +816,25 @@ else
     COMPLETED_STEPS+=("SSL configured with Certbot")
 fi
 
-# Test the Nginx configuration (Graceful restart applied)
+
+# Test the Nginx configuration
 log_step "Restarting Nginx"
 nginx -t || handle_error "Nginx configuration failed"
-systemctl restart nginx || handle_error "Failed to restart Nginx"
-COMPLETED_STEPS+=("Nginx restarted gracefully")
+pkill nginx || handle_error "Failed to stop Nginx"
+systemctl start nginx || handle_error "Failed to start Nginx"
+COMPLETED_STEPS+=("Nginx restarted")
 
 # Setup Laravel application
 log_step "Setting up Laravel application"
 LOCAL_PATH="/var/www/html"
 REPO_URL="$GITHUB_REPO_URL"
 
+# Remove existing web root if it exists (no backup)
 if [ -d "$LOCAL_PATH" ]; then
     rm -rf "$LOCAL_PATH" || handle_error "Failed to remove existing web root"
 fi
 
+# Clone the repository
 git clone -b master "$REPO_URL" "$LOCAL_PATH" || handle_error "Failed to clone repository"
 cd "$LOCAL_PATH" || handle_error "Failed to change directory to web root"
 
@@ -578,6 +859,7 @@ sed -i "s|APP_URL=.*|APP_URL=https://$DOMAIN|" .env || handle_error "Failed to u
 sed -i "s|APP_NAME=.*|APP_NAME=\"$DOMAIN\"|" .env || handle_error "Failed to update APP_NAME in .env"
 COMPLETED_STEPS+=(".env file updated with database credentials")
 
+
 # Run Laravel migrations and seed the database
 log_step "Running Laravel migrations and seeding database"
 php artisan migrate --force || handle_error "Failed to run Laravel migrations"
@@ -597,26 +879,66 @@ chmod +x /var/www/html/sh/restart-services.sh || handle_error "Failed to make se
 # Run the script once to apply initial configuration
 /var/www/html/sh/set_permissions.sh || handle_error "Failed to run permissions script"
 /var/www/html/sh/restart-services.sh || handle_error "Failed to run services script"
+
 COMPLETED_STEPS+=("Correct www permissions set")
 
 # Optimize RADIUS database indexes
 log_step "Optimizing RADIUS database indexes"
 cat > /tmp/radius_optimize.sql << "EOL"
 USE radius;
-ALTER TABLE radcheck ADD INDEX idx_username (username), ADD INDEX idx_attribute (attribute);
+
+-- Add indexes to improve query performance
+
+-- radcheck
+ALTER TABLE radcheck
+  ADD INDEX idx_username (username),
+  ADD INDEX idx_attribute (attribute);
 ANALYZE TABLE radcheck;
-ALTER TABLE radreply ADD INDEX idx_username (username), ADD INDEX idx_attribute (attribute);
+
+-- radreply
+ALTER TABLE radreply
+  ADD INDEX idx_username (username),
+  ADD INDEX idx_attribute (attribute);
 ANALYZE TABLE radreply;
-ALTER TABLE radusergroup ADD INDEX idx_username (username), ADD INDEX idx_groupname (groupname);
+
+-- radusergroup
+ALTER TABLE radusergroup
+  ADD INDEX idx_username (username),
+  ADD INDEX idx_groupname (groupname);
 ANALYZE TABLE radusergroup;
-ALTER TABLE radgroupcheck ADD INDEX idx_groupname (groupname), ADD INDEX idx_attribute (attribute);
+
+-- radgroupcheck
+ALTER TABLE radgroupcheck
+  ADD INDEX idx_groupname (groupname),
+  ADD INDEX idx_attribute (attribute);
 ANALYZE TABLE radgroupcheck;
-ALTER TABLE radgroupreply ADD INDEX idx_groupname (groupname), ADD INDEX idx_attribute (attribute);
+
+-- radgroupreply
+ALTER TABLE radgroupreply
+  ADD INDEX idx_groupname (groupname),
+  ADD INDEX idx_attribute (attribute);
 ANALYZE TABLE radgroupreply;
-ALTER TABLE radacct ADD INDEX idx_username (username), ADD INDEX idx_acctsessionid (acctsessionid), ADD INDEX idx_framedipaddress (framedipaddress), ADD INDEX idx_acctstarttime (acctstarttime), ADD INDEX idx_acctstoptime (acctstoptime), ADD INDEX idx_nasipaddress (nasipaddress), ADD INDEX idx_calledstationid (calledstationid), ADD INDEX idx_callingstationid (callingstationid);
+
+-- radacct (very critical for performance)
+ALTER TABLE radacct
+  ADD INDEX idx_username (username),
+  ADD INDEX idx_acctsessionid (acctsessionid),
+  ADD INDEX idx_framedipaddress (framedipaddress),
+  ADD INDEX idx_acctstarttime (acctstarttime),
+  ADD INDEX idx_acctstoptime (acctstoptime),
+  ADD INDEX idx_nasipaddress (nasipaddress),
+  ADD INDEX idx_calledstationid (calledstationid),
+  ADD INDEX idx_callingstationid (callingstationid);
 ANALYZE TABLE radacct;
-ALTER TABLE radpostauth ADD INDEX idx_username (username), ADD INDEX idx_reply (reply), ADD INDEX idx_authdate (authdate);
+
+-- radpostauth
+ALTER TABLE radpostauth
+  ADD INDEX idx_username (username),
+  ADD INDEX idx_reply (reply),
+  ADD INDEX idx_authdate (authdate);
 ANALYZE TABLE radpostauth;
+
+-- Convert tables to InnoDB and utf8mb4 (recommended for reliability and Unicode support)
 ALTER TABLE radcheck ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ALTER TABLE radreply ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ALTER TABLE radusergroup ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -624,6 +946,8 @@ ALTER TABLE radgroupcheck ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLAT
 ALTER TABLE radgroupreply ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ALTER TABLE radacct ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ALTER TABLE radpostauth ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- Analyze again after engine/charset conversion
 ANALYZE TABLE radcheck;
 ANALYZE TABLE radreply;
 ANALYZE TABLE radusergroup;
@@ -631,15 +955,15 @@ ANALYZE TABLE radgroupcheck;
 ANALYZE TABLE radgroupreply;
 ANALYZE TABLE radacct;
 ANALYZE TABLE radpostauth;
+
 EOL
 
 mysql -u root < /tmp/radius_optimize.sql || handle_error "Failed to optimize RADIUS database indexes"
-rm -f /tmp/radius_optimize.sql || handle_error "Failed to remove radius optimization sql file"
+rm -f /tmp/radius_optimize.sql
 COMPLETED_STEPS+=("RADIUS database indexes optimized")
 
-# Configure Supervisor for queue worker (Pre-created log dir fix)
+# Configure Supervisor for queue worker
 log_step "Configuring Supervisor for queue worker"
-mkdir -p /var/www/html/storage/logs || handle_error "Failed to create Laravel logs directory"
 cat > /etc/supervisor/conf.d/queue-worker.conf << "EOL"
 [program:queue-worker]
 process_name=%(program_name)s_%(process_num)02d
@@ -665,6 +989,10 @@ case $UBUNTU_VERSION in
         chmod +x openvpn.sh || handle_error "Failed to make OpenVPN installer executable"
         ./openvpn.sh || handle_error "Failed to install OpenVPN"
 
+        # Enable and start OpenVPN service
+        systemctl enable openvpn || handle_error "Failed to enable OpenVPN service"
+        systemctl start openvpn || handle_error "Failed to start OpenVPN service"
+
         # Set more secure permissions for OpenVPN
         chown -R root:root /etc/openvpn || handle_error "Failed to set ownership of OpenVPN configuration directory"
         chmod -R 777 /etc/openvpn || handle_error "Failed to set permissions of OpenVPN configuration directory"
@@ -676,36 +1004,29 @@ case $UBUNTU_VERSION in
 esac
 COMPLETED_STEPS+=("OpenVPN installed")
 
-# Configure Systemd sandbox overrides for OpenVPN writes
-log_step "Configuring Systemd sandbox overrides for OpenVPN writes"
-mkdir -p /etc/systemd/system/php${PHP_VERSION}-fpm.service.d || handle_error "Failed to create PHP systemd override directory"
-cat > /etc/systemd/system/php${PHP_VERSION}-fpm.service.d/override.conf << 'EOF'
-[Service]
-ReadWritePaths=/etc/openvpn
-EOF
-
-mkdir -p /etc/systemd/system/supervisor.service.d || handle_error "Failed to create Supervisor systemd override directory"
-cat > /etc/systemd/system/supervisor.service.d/override.conf << 'EOF'
-[Service]
-ReadWritePaths=/etc/openvpn
-EOF
-COMPLETED_STEPS+=("Systemd sandbox overrides configured")
-
-# Install Laravel cron (Safe Append Fix)
+# Install cron
 log_step "Installing cron"
-(crontab -l 2>/dev/null; echo "* * * * * php /var/www/html/artisan schedule:run >> /dev/null 2>&1") | crontab - || handle_error "Failed to install Laravel cron job"
+# Write cron job entry to a temporary file
+echo "* * * * * php /var/www/html/artisan schedule:run >> /dev/null 2>&1" > cronjob || handle_error "Failed to write cron job to temporary file"
+
+# Install the cron job from the temporary file
+crontab cronjob || handle_error "Failed to install cron job"
 COMPLETED_STEPS+=("Cron job installed")
 
-# Update sudoers for www-data user (Updated openvpn explicit target)
+# Clean up the temporary file
+rm cronjob || handle_error "Failed to remove temporary cron job file"
+COMPLETED_STEPS+=("Temporary cron job file removed")
+
+# Update sudoers for www-data user
 log_step "Updating sudoers for www-data user"
 cat >> /etc/sudoers << 'EOL'
-www-data ALL=NOPASSWD: /bin/systemctl start openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl stop openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl restart openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl status openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl reload openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl enable openvpn@server
-www-data ALL=NOPASSWD: /bin/systemctl disable openvpn@server
+www-data ALL=NOPASSWD: /bin/systemctl start openvpn
+www-data ALL=NOPASSWD: /bin/systemctl stop openvpn
+www-data ALL=NOPASSWD: /bin/systemctl restart openvpn
+www-data ALL=NOPASSWD: /bin/systemctl status openvpn
+www-data ALL=NOPASSWD: /bin/systemctl reload openvpn
+www-data ALL=NOPASSWD: /bin/systemctl enable openvpn
+www-data ALL=NOPASSWD: /bin/systemctl disable openvpn
 www-data ALL=NOPASSWD: /bin/systemctl start freeradius
 www-data ALL=NOPASSWD: /bin/systemctl stop freeradius
 www-data ALL=NOPASSWD: /bin/systemctl restart freeradius
@@ -741,18 +1062,27 @@ COMPLETED_STEPS+=("Firewall ports opened and ufw enabled")
 # Test FreeRADIUS configuration
 log_step "Checking FreeRADIUS files"
 
+# Ensure FreeRADIUS configuration files exist (restore if missing)
 if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
-    log_info "FreeRADIUS configuration files missing, reinstalling and reconfiguring FreeRADIUS package"
-    apt-get purge -y freeradius freeradius-common freeradius-config 2>/dev/null || echo "FreeRADIUS not installed"
-    apt-get autoremove -y 2>/dev/null
-    apt-get install -y freeradius freeradius-mysql freeradius-config || handle_error "Failed to reinstall FreeRADIUS"
-    dpkg-reconfigure -f noninteractive freeradius-config 2>/dev/null || echo "Reconfigure not needed"
+log_info "FreeRADIUS configuration files missing, reinstalling and reconfiguring FreeRADIUS package"
+
+# Purge and reinstall FreeRADIUS to ensure clean configuration
+apt-get purge -y freeradius freeradius-common freeradius-config 2>/dev/null || echo "FreeRADIUS not installed"
+apt-get autoremove -y 2>/dev/null
+apt-get install -y freeradius freeradius-mysql freeradius-rest freeradius-config || handle_error "Failed to reinstall FreeRADIUS"
+
+# Reconfigure the package to ensure configuration files are created
+dpkg-reconfigure -f noninteractive freeradius-config 2>/dev/null || echo "Reconfigure not needed"
 fi
 
+log_info "FreeRADIUS configuration not missing, skipping reinstallation...."
+
+# Verify configuration file was created
 if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
-    log_info "Creating minimal radiusd.conf configuration"
-    mkdir -p /etc/freeradius || handle_error "Failed to create freeradius config dir"
-    cat > /etc/freeradius/radiusd.conf << 'EOF'
+# Create a minimal radiusd.conf if still missing
+log_info "Creating minimal radiusd.conf configuration"
+mkdir -p /etc/freeradius
+cat > /etc/freeradius/radiusd.conf << 'EOF'
 prefix = /usr
 exec_prefix = ${prefix}
 sysconfdir = /etc
@@ -770,13 +1100,17 @@ cadir   = ${confdir}/certs
 run_dir = ${localstatedir}/run/${name}
 
 db_dir = ${raddbdir}
+
 libdir = /usr/lib/freeradius
+
 pidfile = ${run_dir}/${name}.pid
 
 correct_escapes = true
+
 max_request_time = 30
 cleanup_delay = 5
 max_requests = 16384
+
 hostname_lookups = no
 
 log {
@@ -802,6 +1136,7 @@ status_server = yes
 
 proxy_requests  = yes
 $INCLUDE proxy.conf
+
 $INCLUDE clients.conf
 
 thread pool {
@@ -814,6 +1149,7 @@ auto_limit_acct = no
 }
 
 $INCLUDE sites-enabled/
+
 $INCLUDE mods-enabled/
 
 policy {
@@ -823,30 +1159,43 @@ $INCLUDE policy.d/
 instantiate {
 }
 EOF
-    chmod 644 /etc/freeradius/radiusd.conf || handle_error "Failed to set radiusd.conf permissions"
-    log_success "Created minimal radiusd.conf configuration"
+chmod 644 /etc/freeradius/radiusd.conf
+log_success "Created minimal radiusd.conf configuration"
 fi
 
+# Re-enable modules after reinstallation
 if [ -f "/etc/freeradius/mods-available/sql" ]; then
     ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/ || handle_error "Failed to re-enable SQL module"
 fi
+if [ -f "/etc/freeradius/mods-available/rest" ]; then
+    log_info "Skipping REST module re-enable; using SQL accounting"
+fi
+log_success "FreeRADIUS configuration files restored"
+
 COMPLETED_STEPS+=("Completed checking FreeRADIUS files")
 
 # Enable buffered-sql site
 log_step "Enabling FreeRADIUS buffered-sql site"
+# Ensure the sites-enabled directory exists
 mkdir -p /etc/freeradius/sites-enabled || handle_error "Failed to create FreeRADIUS sites-enabled directory"
 ln -sf /etc/freeradius/sites-available/buffered-sql /etc/freeradius/sites-enabled/buffered-sql || handle_error "Failed to enable buffered-sql site"
 COMPLETED_STEPS+=("FreeRADIUS buffered-sql site enabled")
 
 # Enable SQL module for FreeRADIUS
 log_step "Enabling SQL module"
+# Ensure the mods-enabled directory exists
 mkdir -p /etc/freeradius/mods-enabled || handle_error "Failed to create FreeRADIUS mods-enabled directory"
 ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql || handle_error "Failed to enable SQL module"
 COMPLETED_STEPS+=("FreeRADIUS SQL module enabled")
 
 # Write new FreeRADIUS SQL module
 log_step "Writing new FreeRADIUS SQL module"
+
 SQL_FILE="/etc/freeradius/mods-available/sql"
+
+# Backup if it exists
+#[ -f "$SQL_FILE" ] && cp "$SQL_FILE" "${SQL_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+
 cat > "$SQL_FILE" <<EOF
 # -*- text -*-
 sql {
@@ -893,23 +1242,77 @@ sql {
 	\$INCLUDE \${modconfdir}/\${.:name}/main/mysql/queries.conf
 }
 EOF
+
 log_success "FreeRADIUS SQL module written to $SQL_FILE"
 COMPLETED_STEPS+=("FreeRADIUS SQL module written with database credentials")
+
+# Skip enabling FreeRADIUS REST module; use SQL accounting
+log_step "Skipping FreeRADIUS REST module enable"
+COMPLETED_STEPS+=("FreeRADIUS REST module skipped")
+
+# Configure REST module connect_uri
+log_step "Skipping FreeRADIUS REST module configuration"
+# REST module configuration disabled; no REST connect_uri
+if false; then
+    
+    # Configure REST module to use JSON body and TLS
+    sed -i '/accounting\s*{/,/^\s*}/{s/^\(\s*\)tls.*/\1body = '\''json'\''\n\1tls = ${..tls}/}' /etc/freeradius/mods-available/rest || handle_error "Failed to configure accounting section"
+    # Update connect_uri to use domain/api instead of localhost
+    sed -i 's|connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || handle_error "Failed to configure connect_uri"
+    # Also handle the commented version
+    sed -i 's|# connect_uri = "http://127.0.0.1/"|connect_uri = "https://'$DOMAIN'/api"|g' "$REST_CONFIG" || true
+fi
+
+COMPLETED_STEPS+=("Skipped FreeRADIUS REST module configuration")
+
 
 # Configure FreeRADIUS default site
 log_step "Configuring FreeRADIUS default site"
 DEFAULT_SITE="/etc/freeradius/sites-enabled/default"
+
 if [ -f "$DEFAULT_SITE" ]; then
-    sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql"
-    sed -i 's/^[[:space:]]*detail/#       detail/' "$DEFAULT_SITE" || handle_error "Failed to comment out detail line"
-    log_step "Replacing accounting section in FreeRADIUS default site"
+# Change -sql to sql
+sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql in FreeRADIUS default site configuration"
+
+# Comment out detail line
+sed -i 's/^[[:space:]]*detail/#       detail/' "$DEFAULT_SITE" || handle_error "Failed to comment out detail line in FreeRADIUS default site configuration"
+
+# Replace accounting section safely
+log_step "Replacing accounting section in FreeRADIUS default site"
+
     cat << 'EOF' > /tmp/new_accounting_block
 accounting {
+#  Update accounting packet by adding the CUI attribute
+#   cui
+
+#   detail
+#   daily
+
+#   unix
+
+#   radutmp
+#   sradutmp
+
+#   sqlippool
+
 sql
+
+#   if (noop) {
+#       ok
+#   }
+
+#   pgsql-voip
+
 exec
+
 attr_filter.accounting_response
+
+#   Acct-Type Status-Server {
+#
+#   }
 }
 EOF
+
     awk '
     BEGIN { skip = 0 }
     /^accounting[ \t]*{/ { print_block = 1; print_file("/tmp/new_accounting_block"); skip = 1; next }
@@ -920,140 +1323,115 @@ EOF
         close(file)
     }
     ' "$DEFAULT_SITE" > /tmp/tmp_site && mv /tmp/tmp_site "$DEFAULT_SITE"
+
 else
     handle_error "Default site configuration file not found"
 fi
+
 COMPLETED_STEPS+=("FreeRADIUS default site configured")
 
-# Apply Systemd Sandbox changes from the overrides
-systemctl daemon-reload || handle_error "Failed to reload systemd daemon"
 
-# Enable and start all services (Consolidated Block)
-log_step "Enabling and restarting all services"
+# Start and enable all services
+log_step "Starting and enabling all services"
+systemctl start nginx || handle_error "Failed to start Nginx"
+systemctl enable nginx || handle_error "Failed to enable Nginx"
+systemctl start php${PHP_VERSION}-fpm || handle_error "Failed to start PHP ${PHP_VERSION} FPM"
+systemctl enable php${PHP_VERSION}-fpm || handle_error "Failed to enable PHP ${PHP_VERSION} FPM"
+systemctl start supervisor || handle_error "Failed to start Supervisor"
+systemctl enable supervisor || handle_error "Failed to enable Supervisor"
+systemctl start openvpn || handle_error "Failed to start OpenVPN"
+systemctl enable openvpn || handle_error "Failed to enable OpenVPN"
+systemctl start freeradius || handle_error "Failed to start FreeRADIUS"
+systemctl enable freeradius || handle_error "Failed to enable FreeRADIUS"
+COMPLETED_STEPS+=("All services started and enabled")
 
-SERVICES=(nginx php${PHP_VERSION}-fpm supervisor openvpn@server freeradius valkey-server)
-for service in "${SERVICES[@]}"; do
-    systemctl enable "$service" || handle_error "Failed to enable $service"
-    systemctl restart "$service" || handle_error "Failed to restart $service"
-done
-COMPLETED_STEPS+=("All services enabled and restarted")
+# Restart all services to ensure proper configuration
+log_step "Restarting all services"
+systemctl restart nginx || handle_error "Failed to restart Nginx"
+systemctl restart php${PHP_VERSION}-fpm || handle_error "Failed to restart PHP ${PHP_VERSION} FPM"
+systemctl restart supervisor || handle_error "Failed to restart Supervisor"
+systemctl restart openvpn || handle_error "Failed to restart OpenVPN"
+systemctl restart freeradius || handle_error "Failed to restart FreeRADIUS"
+COMPLETED_STEPS+=("All services restarted")
 
 # Create a script to update memory configurations
 cat > /usr/local/bin/update_memory_config.sh << 'EOL'
-#!/usr/bin/env bash
-# Optimized Co-hosted Tuning Script for SimpleISP
-# Balances MariaDB, Valkey, PHP-FPM, and FreeRADIUS.
+#!/bin/bash
+# This script updates MySQL and Valkey memory configurations based on available system memory
 
-set -euo pipefail
-
+# Log file
 LOG_FILE="/var/log/memory_config_updates.log"
-log() { echo "[$(date +'%F %T')] $1" >> "$LOG_FILE"; }
+echo "[$(date)] Starting memory configuration update" >> "$LOG_FILE"
 
-log "Starting memory configuration update"
+# Function to get total system memory in MB
+get_total_memory_mb() {
+    echo $(free -m | awk '/^Mem:/{print $2}')
+}
 
-# 1. Introspect System Resources
-TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-VCPUS=$(nproc --all)
-
-log "Detected RAM: ${TOTAL_RAM_MB}MB | CPU Cores: ${VCPUS}"
-
-# 2. Budget Memory
-# OS Reserve: 15% or 1024MB, whichever is higher
-OS_RESERVE_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
-[ "$OS_RESERVE_MB" -lt 1024 ] && OS_RESERVE_MB=1024
-
-# MariaDB: 40% of total RAM
-MARIADB_POOL_MB=$(( TOTAL_RAM_MB * 40 / 100 ))
-[ "$MARIADB_POOL_MB" -lt 256 ] && MARIADB_POOL_MB=256
-
-# Valkey/Redis: 15% of total RAM
-VALKEY_MB=$(( TOTAL_RAM_MB * 15 / 100 ))
-[ "$VALKEY_MB" -lt 128 ] && VALKEY_MB=128
-
-# PHP-FPM: The remaining RAM
-REMAINING_MB=$(( TOTAL_RAM_MB - OS_RESERVE_MB - MARIADB_POOL_MB - VALKEY_MB ))
-[ "$REMAINING_MB" -lt 256 ] && REMAINING_MB=256
-
-log "Budget -> OS: ${OS_RESERVE_MB}MB | DB: ${MARIADB_POOL_MB}MB | Cache: ${VALKEY_MB}MB | PHP: ${REMAINING_MB}MB"
-
-# 3. Apply MariaDB Tuning
-MARIADB_CONF="/etc/mysql/mariadb.conf.d/99-autotune.cnf"
-log "Tuning MariaDB..."
-cat > "$MARIADB_CONF" <<EOF
+# Update MySQL configuration
+update_mysql_config() {
+    local total_mem=$(get_total_memory_mb)
+    local innodb_buffer_pool_size=$((total_mem * 60 / 100))M
+    local key_buffer_size=$((total_mem * 10 / 100))M
+    
+    echo "[$(date)] Updating MySQL configuration" >> "$LOG_FILE"
+    echo "[$(date)] Total memory: ${total_mem}MB" >> "$LOG_FILE"
+    echo "[$(date)] Setting innodb_buffer_pool_size to $innodb_buffer_pool_size" >> "$LOG_FILE"
+    echo "[$(date)] Setting key_buffer_size to $key_buffer_size" >> "$LOG_FILE"
+    
+    # Create a temporary config file
+    cat > /etc/mysql/conf.d/memory.cnf << MYSQL_CFG
 [mysqld]
-innodb_buffer_pool_size = ${MARIADB_POOL_MB}M
-innodb_buffer_pool_instances = $(( MARIADB_POOL_MB > 1024 ? MARIADB_POOL_MB / 1024 : 1 ))
-innodb_log_file_size = $(( MARIADB_POOL_MB / 4 ))M
-max_connections = $(( VCPUS * 150 ))
-tmp_table_size = 64M
-max_heap_table_size = 64M
-EOF
-systemctl restart mariadb || service mysql restart
-
-# 4. Apply Valkey Tuning
-VALKEY_CONF="/etc/valkey/valkey.conf"
-if [ -f "$VALKEY_CONF" ]; then
-    log "Tuning Valkey..."
-    # Replace existing maxmemory line or append it
-    sed -i -E "s/^#?maxmemory .*/maxmemory ${VALKEY_MB}mb/" "$VALKEY_CONF"
-    # Ensure eviction policy is set safely for Laravel (protects queues/sessions without expirations)
-    if ! grep -q "^maxmemory-policy" "$VALKEY_CONF"; then
-        echo "maxmemory-policy volatile-lru" >> "$VALKEY_CONF"
+innodb_buffer_pool_size = $innodb_buffer_pool_size
+key_buffer_size = $key_buffer_size
+MYSQL_CFG
+    
+    # Restart MySQL if running
+    if systemctl is-active --quiet mariadb; then
+        echo "[$(date)] Restarting MySQL to apply new configuration" >> "$LOG_FILE"
+        systemctl restart mariadb >> "$LOG_FILE" 2>&1 || echo "[$(date)] Failed to restart MySQL" >> "$LOG_FILE"
     fi
-    systemctl restart valkey-server || true
-fi
+}
 
-# 5. Apply PHP-FPM Tuning
-# Assuming Laravel average process size = 80MB
-AVG_PHP_RSS_MB=80
-MAX_CHILDREN=$(( REMAINING_MB / AVG_PHP_RSS_MB ))
-[ "$MAX_CHILDREN" -lt 5 ] && MAX_CHILDREN=5
-
-# Find active PHP-FPM pool file
-POOL_CONF=$(find /etc/php/*/fpm/pool.d/ -name "www.conf" | head -n 1)
-if [ -n "$POOL_CONF" ]; then
-    log "Tuning PHP-FPM in $POOL_CONF..."
-    sed -i -E "s/^[;#]?pm.max_children =.*/pm.max_children = ${MAX_CHILDREN}/" "$POOL_CONF"
-    sed -i -E "s/^[;#]?pm.start_servers =.*/pm.start_servers = $(( MAX_CHILDREN * 20 / 100 + 1 ))/" "$POOL_CONF"
-    sed -i -E "s/^[;#]?pm.min_spare_servers =.*/pm.min_spare_servers = $(( MAX_CHILDREN * 10 / 100 + 1 ))/" "$POOL_CONF"
-    sed -i -E "s/^[;#]?pm.max_spare_servers =.*/pm.max_spare_servers = $(( MAX_CHILDREN * 30 / 100 + 1 ))/" "$POOL_CONF"
+# Update Valkey configuration
+update_valkey_config() {
+    local total_mem=$(get_total_memory_mb)
+    local maxmemory=$((total_mem * 20 / 100))mb  # Using 20% of total memory for Valkey
     
-    # Reload PHP-FPM
-    PHP_SVC=$(basename $(dirname $(dirname "$POOL_CONF")) | sed 's|^|php|;s|$|-fpm|')
-    systemctl reload "$PHP_SVC" || systemctl restart "$PHP_SVC"
-fi
-
-# 6. Apply FreeRADIUS Tuning
-RADIUS_CONF=$(find /etc/freeradius -name "radiusd.conf" 2>/dev/null | head -n 1)
-if [ -n "$RADIUS_CONF" ]; then
-    log "Tuning FreeRADIUS in $RADIUS_CONF..."
-    # Start 2 threads per core, max out at 6 per core
-    START_SERVERS=$(( VCPUS * 2 ))
-    MAX_SERVERS=$(( VCPUS * 6 ))
+    echo "[$(date)] Updating Valkey configuration" >> "$LOG_FILE"
+    echo "[$(date)] Setting maxmemory to $maxmemory" >> "$LOG_FILE"
     
-    awk -v s="$START_SERVERS" -v m="$MAX_SERVERS" '
-    BEGIN { inpool=0 }
-    /^thread pool \{/ { inpool=1; print; next }
-    /^\}/ { inpool=0; print; next }
-    inpool && /^[[:space:]]*start_servers/ { printf "\tstart_servers = %s\n", s; next }
-    inpool && /^[[:space:]]*max_servers/ { printf "\tmax_servers = %s\n", m; next }
-    { print }
-    ' "$RADIUS_CONF" > "${RADIUS_CONF}.tmp" && mv "${RADIUS_CONF}.tmp" "$RADIUS_CONF"
-    
-    systemctl restart freeradius || true
-fi
+    # Update Valkey config
+    if [ -f "/etc/valkey/valkey.conf" ]; then
+        sed -i "s/^maxmemory .*/maxmemory $maxmemory/" /etc/valkey/valkey.conf
+        
+        # Restart Valkey if running
+        if systemctl is-active --quiet valkey; then
+            echo "[$(date)] Restarting Valkey to apply new configuration" >> "$LOG_FILE"
+            systemctl restart valkey >> "$LOG_FILE" 2>&1 || echo "[$(date)] Failed to restart Valkey" >> "$LOG_FILE"
+        fi
+    else
+        echo "[$(date)] Valkey config file not found" >> "$LOG_FILE"
+    fi
+}
 
-log "Memory configuration update completed"
+# Execute updates
+update_mysql_config
+update_valkey_config
+
+echo "[$(date)] Memory configuration update completed" >> "$LOG_FILE"
 EOL
 
 # Make the script executable
 chmod +x /usr/local/bin/update_memory_config.sh || handle_error "Failed to make memory config script executable"
 
-# Add cron job to run at 3 AM daily (Safe Append Fix applied)
+
+# Add cron job to run at 3 AM daily
 (crontab -l 2>/dev/null; echo "0 3 * * * /usr/local/bin/update_memory_config.sh") | crontab - || handle_error "Failed to add cron job"
 
 # Run the script once to apply initial configuration
 /usr/local/bin/update_memory_config.sh || handle_error "Failed to run initial memory configuration"
+
 COMPLETED_STEPS+=("Automatic memory configuration script installed at /usr/local/bin/update_memory_config.sh")
 
 # Final verification
@@ -1070,4 +1448,4 @@ done
 # Complete installation message
 log_success "Installation completed successfully!"
 echo "You can find your database credentials in $DB_CREDENTIALS_FILE"
-echo "Your SimpleISP installation is available at: https://$DOMAIN"
+echo "Your SimpleSpot installation is available at: https://$DOMAIN"
