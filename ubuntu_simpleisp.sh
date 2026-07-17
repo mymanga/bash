@@ -576,15 +576,12 @@ COMPLETED_STEPS+=("Nginx configured")
 log_step "Configuring SSL with Certbot"
 echo "Configuring SSL certificate for $DOMAIN"
 
-if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-    log_info "SSL certificate already exists for $DOMAIN, reusing existing certificate"
-    echo -e "1\n" | certbot --nginx -d "$DOMAIN" || handle_error "Failed to reuse SSL certificate"
-    COMPLETED_STEPS+=("SSL certificate reused (already exists)")
-else
-    log_info "No existing SSL certificate found for $DOMAIN, requesting new certificate"
-    certbot --nginx -d "$DOMAIN" --agree-tos --email "$EMAIL_ADDRESS" --no-eff-email --non-interactive --redirect || handle_error "Failed to configure SSL with Certbot"
-    COMPLETED_STEPS+=("SSL configured with Certbot")
-fi
+# One non-interactive call covers both cases: with --keep-until-expiring
+# certbot reinstalls an existing valid certificate into the fresh nginx
+# config (no reissue, no rate-limit usage) and only requests a new one
+# when none exists.
+certbot --nginx -d "$DOMAIN" --agree-tos --email "$EMAIL_ADDRESS" --no-eff-email --non-interactive --redirect --keep-until-expiring || handle_error "Failed to configure SSL with Certbot"
+COMPLETED_STEPS+=("SSL configured with Certbot")
 
 # Test the Nginx configuration (Graceful restart applied)
 log_step "Restarting Nginx"
