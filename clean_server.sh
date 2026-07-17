@@ -43,9 +43,14 @@ fi
 
 echo "[$(date)] Detected PHP version: $PHP_VERSION"
 
-# Stop services
+# Stop services (valkey-server on noble, valkey + valkey-sentinel on focal/jammy Percona builds)
 log_step "Stopping services"
-systemctl stop nginx freeradius mariadb valkey-server valkey php${PHP_VERSION}-fpm supervisor openvpn || echo "Could not stop all services"
+systemctl stop nginx freeradius mariadb valkey-server valkey valkey-sentinel php${PHP_VERSION}-fpm supervisor openvpn openvpn@server || echo "Could not stop all services"
+
+# Remove installer-added cron entries from root's crontab. The installers
+# append these on every run, so leftovers would duplicate on reinstall.
+log_step "Removing installer cron entries"
+crontab -l 2>/dev/null | grep -vE 'artisan schedule:run|valkey-debug\.sh|universal\.sh|db_cleanup\.sh|update_memory_config\.sh' | crontab - 2>/dev/null || echo "No crontab entries to clean"
 
 # Remove web files
 log_step "Removing web files"
@@ -67,10 +72,35 @@ fi
 rm -rf /etc/openvpn 2>/dev/null
 rm -rf /etc/supervisor 2>/dev/null
 
-# Remove valkey data
-# log_step "Removing valkey data"
-# rm -rf /var/lib/valkey/* 2>/dev/null
-# rm -rf /var/lib/valkey/.* 2>/dev/null
+# Remove valkey data, logs, debug script and systemd overrides
+# (config in /etc/valkey is left in place - the installer rewrites it)
+log_step "Removing valkey data and overrides"
+rm -rf /var/lib/valkey/* 2>/dev/null
+rm -f /var/log/valkey/*.log 2>/dev/null
+rm -f /usr/local/bin/valkey-debug.sh 2>/dev/null
+rm -rf /etc/systemd/system/valkey.service.d 2>/dev/null
+rm -rf /etc/systemd/system/valkey-server.service.d 2>/dev/null
+
+# Remove installer systemd sandbox overrides (php-fpm / supervisor ReadWritePaths)
+log_step "Removing systemd sandbox overrides"
+rm -rf /etc/systemd/system/php*-fpm.service.d 2>/dev/null
+rm -rf /etc/systemd/system/supervisor.service.d 2>/dev/null
+systemctl daemon-reload 2>/dev/null
+
+# Remove installer-added www-data sudoers entries (appended on every install,
+# so they would duplicate on reinstall). Validate before keeping the edit.
+log_step "Removing www-data sudoers entries"
+if grep -q '^www-data ALL=NOPASSWD:' /etc/sudoers; then
+    cp -a /etc/sudoers /etc/sudoers.cleanup.bak
+    sed -i '/^www-data ALL=NOPASSWD:/d' /etc/sudoers
+    if visudo -c >/dev/null 2>&1; then
+        rm -f /etc/sudoers.cleanup.bak
+        echo "[$(date)] www-data sudoers entries removed"
+    else
+        mv /etc/sudoers.cleanup.bak /etc/sudoers
+        echo "[$(date)] WARNING: sudoers validation failed, restored original"
+    fi
+fi
 
 # Remove MySQL/MariaDB data and users
 log_step "Removing MySQL/MariaDB data and users"
@@ -115,12 +145,13 @@ log_step "Removing application-specific files"
 # Preserve db.txt for credential reuse on reinstall
 # rm -f /root/db.txt 2>/dev/null
 rm -f /etc/cron.d/laravel-scheduler 2>/dev/null
+rm -f /usr/local/bin/update_memory_config.sh 2>/dev/null
 
-# Remove ionCube files
+# Remove ionCube files (glob across all PHP versions in case detection missed one)
 log_step "Removing ionCube files"
-rm -f /etc/php/${PHP_VERSION}/mods-available/ioncube.ini 2>/dev/null
-rm -f /etc/php/${PHP_VERSION}/cli/conf.d/00-ioncube.ini 2>/dev/null
-rm -f /etc/php/${PHP_VERSION}/fpm/conf.d/00-ioncube.ini 2>/dev/null
+rm -f /etc/php/*/mods-available/ioncube.ini 2>/dev/null
+rm -f /etc/php/*/cli/conf.d/00-ioncube.ini 2>/dev/null
+rm -f /etc/php/*/fpm/conf.d/00-ioncube.ini 2>/dev/null
 # Preserve ionCube installation for reuse on reinstall
 # rm -rf /usr/local/ioncube 2>/dev/null
 find /usr/lib/php/ -name "*ioncube*" -delete 2>/dev/null
