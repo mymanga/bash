@@ -121,6 +121,28 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.networkradius.com.asc
 log_success "NetworkRADIUS repository configured for Ubuntu $UBUNTU_VERSION"
 COMPLETED_STEPS+=("NetworkRADIUS repository configured")
 
+# Set Valkey package source. Ubuntu ships Valkey in its own archive only from
+# noble (24.04, via noble-updates backport) onward; focal/jammy get Percona's
+# builds instead, which use different package and service names.
+log_step "Configuring Valkey package source"
+if [[ "$UBUNTU_VERSION" == "focal" || "$UBUNTU_VERSION" == "jammy" ]]; then
+    # Remove conflicting redis packages
+    apt-get remove -y redis-tools redis-server || true
+
+    # Install Percona release package and enable its Valkey repository
+    curl -fsSL "https://repo.percona.com/apt/percona-release_latest.${UBUNTU_VERSION}_all.deb" -o /tmp/percona-release_latest.deb || handle_error "Failed to download percona-release package"
+    dpkg -i /tmp/percona-release_latest.deb || handle_error "Failed to install percona-release package"
+    rm -f /tmp/percona-release_latest.deb
+    percona-release enable valkey experimental || handle_error "Failed to enable Percona Valkey repository"
+
+    VALKEY_PACKAGES="valkey valkey-compat"
+    VALKEY_SERVICE="valkey"
+else
+    VALKEY_PACKAGES="valkey-server valkey-tools valkey-redis-compat valkey-sentinel"
+    VALKEY_SERVICE="valkey-server"
+fi
+COMPLETED_STEPS+=("Valkey package source configured (service: ${VALKEY_SERVICE})")
+
 # Set environment variable to avoid interactive prompts
 export DEBIAN_FRONTEND=noninteractive
 
@@ -132,7 +154,7 @@ COMPLETED_STEPS+=("System packages updated")
 
 # Install required packages (Cleaned virtual PHP packages and freeradius-rest)
 log_step "Installing required packages"
-INSTALL_PACKAGES="nginx-full python3-certbot-nginx php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-cli php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-common php${PHP_VERSION}-gd php${PHP_VERSION}-mbstring php${PHP_VERSION}-xml php${PHP_VERSION}-dev php${PHP_VERSION}-bcmath php${PHP_VERSION}-intl php${PHP_VERSION}-redis git unzip curl wget software-properties-common apt-transport-https ca-certificates gnupg lsb-release supervisor valkey-server valkey-tools valkey-redis-compat valkey-sentinel ufw openvpn easy-rsa freeradius freeradius-mysql freeradius-utils mariadb-server mariadb-client"
+INSTALL_PACKAGES="nginx-full python3-certbot-nginx php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-cli php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-common php${PHP_VERSION}-gd php${PHP_VERSION}-mbstring php${PHP_VERSION}-xml php${PHP_VERSION}-dev php${PHP_VERSION}-bcmath php${PHP_VERSION}-intl php${PHP_VERSION}-redis git unzip curl wget software-properties-common apt-transport-https ca-certificates gnupg lsb-release supervisor ${VALKEY_PACKAGES} ufw openvpn easy-rsa freeradius freeradius-mysql freeradius-utils mariadb-server mariadb-client"
 
 if [ "$REINSTALL" = true ]; then
     log_info "Reinstalling packages (forcing configuration file replacement)"
@@ -144,7 +166,7 @@ COMPLETED_STEPS+=("Required packages installed")
 
 # Configure Valkey service overrides
 log_step "Configuring Valkey service overrides"
-VKEY_OVERRIDE_DIR="/etc/systemd/system/valkey.service.d"
+VKEY_OVERRIDE_DIR="/etc/systemd/system/${VALKEY_SERVICE}.service.d"
 VKEY_OVERRIDE_FILE="${VKEY_OVERRIDE_DIR}/override.conf"
 
 mkdir -p "$VKEY_OVERRIDE_DIR"
@@ -273,24 +295,24 @@ EOL
 # Restart Valkey to apply new configuration
 systemctl daemon-reexec || log_warning "daemon-reexec failed (non-critical)"
 systemctl daemon-reload || handle_error "Failed to reload systemd daemon"
-systemctl restart valkey-server || handle_error "Failed to restart Valkey"
-systemctl enable valkey-server || handle_error "Failed to enable Valkey"
+systemctl restart "$VALKEY_SERVICE" || handle_error "Failed to restart Valkey"
+systemctl enable "$VALKEY_SERVICE" || handle_error "Failed to enable Valkey"
 
 # Verify Valkey is running
 log_step "Verifying Valkey service status"
-if systemctl is-active --quiet valkey-server; then
+if systemctl is-active --quiet "$VALKEY_SERVICE"; then
     log_success "Valkey service is running"
     COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
 else
     log_warning "Valkey service is not running as expected. Checking status..."
-    systemctl status valkey-server --no-pager || true
+    systemctl status "$VALKEY_SERVICE" --no-pager || true
     
     log_info "Attempting to start Valkey service..."
-    if systemctl start valkey-server; then
+    if systemctl start "$VALKEY_SERVICE"; then
         log_success "Successfully started Valkey service"
         COMPLETED_STEPS+=("Valkey configured with ${MAX_MEMORY_MB}MB memory allocation")
     else
-        log_error "Failed to start Valkey service. Please check the logs with: journalctl -u valkey-server -n 50"
+        log_error "Failed to start Valkey service. Please check the logs with: journalctl -u ${VALKEY_SERVICE} -n 50"
         log_warning "Continuing installation despite Valkey service issue..."
         COMPLETED_STEPS+=("Valkey configuration completed but service failed to start")
     fi
@@ -298,17 +320,17 @@ fi
 
 # Create Valkey debug script
 log_step "Creating Valkey debug script"
-cat > /usr/local/bin/valkey-debug.sh << 'EOF'
+cat > /usr/local/bin/valkey-debug.sh << EOF
 #!/bin/bash
 
 VALKEY_HOST="127.0.0.1"
 VALKEY_PORT="6379"
 
 echo "=== Valkey Status ==="
-systemctl status valkey --no-pager -l
+systemctl status ${VALKEY_SERVICE} --no-pager -l
 
 echo -e "\n=== Valkey Key Statistics ==="
-echo "Total Keys in DB 0: $(valkey-cli -h $VALKEY_HOST -p $VALKEY_PORT dbsize)"
+echo "Total Keys in DB 0: \$(valkey-cli -h \$VALKEY_HOST -p \$VALKEY_PORT dbsize)"
 EOF
 
 chmod +x /usr/local/bin/valkey-debug.sh || handle_error "Failed to make Valkey debug script executable"
@@ -321,7 +343,7 @@ COMPLETED_STEPS+=("Monitoring cron job added")
 
 # Verify Valkey is working
 log_step "Verifying Valkey installation"
-if ! systemctl is-active --quiet valkey; then handle_error "Valkey service is not running"; fi
+if ! systemctl is-active --quiet "$VALKEY_SERVICE"; then handle_error "Valkey service is not running"; fi
 
 # Test Valkey connectivity and basic operations
 if [ "$(valkey-cli ping)" != "PONG" ]; then handle_error "Valkey is not responding to ping"; fi
@@ -399,7 +421,9 @@ mkdir -p /etc/mysql/mariadb.conf.d/ || handle_error "Failed to create MariaDB co
 
 cat > /etc/mysql/mariadb.conf.d/50-server.cnf << 'EOL'
 [server]
-[mariadbd]
+# [mysqld] is read by every MariaDB version; [mariadbd] only exists from
+# 10.4.6, so focal's MariaDB 10.3 would silently ignore this whole block.
+[mysqld]
 user                    = mysql
 pid-file                = /run/mysqld/mysqld.pid
 basedir                 = /usr
@@ -932,7 +956,7 @@ systemctl daemon-reload || handle_error "Failed to reload systemd daemon"
 # Enable and start all services (Consolidated Block)
 log_step "Enabling and restarting all services"
 
-SERVICES=(nginx php${PHP_VERSION}-fpm supervisor openvpn@server freeradius valkey-server)
+SERVICES=(nginx php${PHP_VERSION}-fpm supervisor openvpn@server freeradius "$VALKEY_SERVICE")
 for service in "${SERVICES[@]}"; do
     systemctl enable "$service" || handle_error "Failed to enable $service"
     systemctl restart "$service" || handle_error "Failed to restart $service"
@@ -969,7 +993,7 @@ COMPLETED_STEPS+=("OpenVPN sandbox write access verified (ovpn_fix.sh)")
 
 # Final verification
 log_step "Verifying all services are running"
-for service in nginx mariadb freeradius valkey-server php${PHP_VERSION}-fpm; do
+for service in nginx mariadb freeradius "$VALKEY_SERVICE" php${PHP_VERSION}-fpm; do
     if ! systemctl is-active --quiet $service; then
         log_warning "$service is not running"
         systemctl status $service

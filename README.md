@@ -21,7 +21,7 @@ Each installer sets up the full stack:
 - **nginx** + **PHP-FPM** serving the Laravel panel from `/var/www/html` (with Let's Encrypt via certbot)
 - **MariaDB** (unix_socket root auth; credentials written to a file reported at the end of the install)
 - **FreeRADIUS 3.2** (NetworkRADIUS packages) with SQL accounting into the `radius` database
-- **Valkey** (Redis-compatible cache) with systemd hardening overrides
+- **Valkey** (Redis-compatible cache) with systemd hardening overrides — installed from Percona's repo on focal/jammy (service `valkey`), from the Ubuntu archive on noble (service `valkey-server`)
 - **OpenVPN** (via `openvpn.sh`) with systemd `ReadWritePaths` overrides so the panel can manage `/etc/openvpn`
 - **supervisor** for Laravel queue workers, UFW rules, cron jobs, and sudoers entries for `www-data` service control
 
