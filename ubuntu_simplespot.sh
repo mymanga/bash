@@ -204,10 +204,15 @@ log_info "Configuring Valkey with ${MAX_MEMORY_MB}MB memory allocation"
 # Create Valkey configuration directory if it doesn't exist
 mkdir -p /etc/valkey || handle_error "Failed to create Valkey configuration directory"
 
+# Percona's valkey 8.x package ships /var/lib/valkey and /var/log/valkey owned
+# by root while the service runs as user valkey; it must write both (AOF+log).
+mkdir -p /var/lib/valkey /var/log/valkey || handle_error "Failed to create Valkey data/log directories"
+chown -R valkey:valkey /var/lib/valkey /var/log/valkey || handle_error "Failed to set Valkey directory ownership"
+
 # Configure Valkey with optimized settings for FreeRADIUS
 cat > /etc/valkey/valkey.conf << EOL
 # Valkey configuration for FreeRADIUS
-bind 0.0.0.0 ::0
+bind 0.0.0.0 -::0
 protected-mode yes
 port 6379
 tcp-backlog 511
