@@ -24,6 +24,10 @@
 #   site -> detail file -> buffered-sql -> SQL) so accounting survives DB
 #   stalls/restarts; validated with -XC, rolled back on failure, restart
 #   reuses the changed-only logic. Idempotent on already-wired servers.
+#
+# v3.2 (2026-07-17): Step 6c appends the /usr/bin systemctl/supervisorctl
+#   sudoers entries the panel actually invokes (plus the umbrella
+#   "openvpn" unit); validated with visudo -c, restored on failure.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -874,6 +878,67 @@ EOF
   else
     log "[DRY] would validate with -XC and restart FreeRADIUS if valid"
   fi
+fi
+
+log ""
+
+# ----------------------------------------------------------------------
+# Step 6c: Ensure the www-data sudoers entries the panel actually uses.
+# The panel invokes systemctl by bare name (sudo's secure_path resolves
+# it to /usr/bin/systemctl) and checks the umbrella "openvpn" unit; older
+# installs only granted /bin/systemctl + openvpn@server, so the panel's
+# status checks were denied and OpenVPN showed as stopped while running.
+# Mirrors the installers' second sudoers block; idempotent.
+# ----------------------------------------------------------------------
+log "========================"
+log " Step 6c: Panel sudoers entries (www-data)"
+log "------------------------"
+
+if grep -qF '/usr/bin/systemctl status openvpn' /etc/sudoers; then
+  log "[OK] sudoers already has the /usr/bin entries; no change"
+elif [ "$DRY_RUN" -eq 0 ]; then
+  cp -a /etc/sudoers "/etc/sudoers.bak.${TIMESTAMP}"
+  prune_baks /etc/sudoers
+  cat >> /etc/sudoers << 'EOF'
+www-data ALL=NOPASSWD: /usr/bin/systemctl start openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl status openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl reload openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl enable openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl disable openvpn@server
+www-data ALL=NOPASSWD: /bin/systemctl start openvpn
+www-data ALL=NOPASSWD: /bin/systemctl stop openvpn
+www-data ALL=NOPASSWD: /bin/systemctl restart openvpn
+www-data ALL=NOPASSWD: /bin/systemctl status openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl start openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl status openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl start freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl status freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl reload freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl enable freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl disable freeradius
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl stop all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl reread
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl update
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl start all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl restart all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl status
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart supervisor
+www-data ALL=NOPASSWD: /usr/bin/systemctl status ssh
+EOF
+  if visudo -c >/dev/null 2>&1; then
+    log "[OK] appended /usr/bin sudoers entries for www-data (visudo -c validated; backup: /etc/sudoers.bak.${TIMESTAMP})"
+  else
+    cp -a "/etc/sudoers.bak.${TIMESTAMP}" /etc/sudoers
+    log "[ERROR] sudoers FAILED visudo validation after append; restored backup"
+  fi
+else
+  log "[DRY] would append /usr/bin systemctl/supervisorctl sudoers entries for www-data"
 fi
 
 log ""
