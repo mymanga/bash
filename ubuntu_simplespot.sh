@@ -99,26 +99,27 @@ else
 fi
 COMPLETED_STEPS+=("PHP repository added")
 
-# Set NetworkRADIUS PGP public key
-log_step "Configuring NetworkRADIUS repository"
-install -d -o root -g root -m 0755 /etc/apt/keyrings || handle_error "Failed to create keyrings directory"
-curl -s 'https://packages.networkradius.com/pgp/packages%40networkradius.com' | sudo tee /etc/apt/keyrings/packages.networkradius.com.asc > /dev/null || handle_error "Failed to download NetworkRADIUS PGP key"
-COMPLETED_STEPS+=("NetworkRADIUS PGP key installed")
-
-# Add NetworkRADIUS APT preferences
-printf 'Package: /freeradius/\nPin: origin "packages.networkradius.com"\nPin-Priority: 999\n' | sudo tee /etc/apt/preferences.d/networkradius > /dev/null || handle_error "Failed to set NetworkRADIUS preferences"
-
-# Add NetworkRADIUS repository based on Ubuntu version
-case $UBUNTU_VERSION in
-    "noble") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/noble noble main" ;;
-    "jammy") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/jammy jammy main" ;;
-    "focal") REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/focal focal main" ;;
-    *) handle_error "Unsupported Ubuntu version: $UBUNTU_VERSION" ;;
-esac
-
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.networkradius.com.asc] $REPO_URL" | sudo tee /etc/apt/sources.list.d/networkradius.list > /dev/null || handle_error "Failed to add NetworkRADIUS repository"
-log_success "NetworkRADIUS repository configured for Ubuntu $UBUNTU_VERSION"
-COMPLETED_STEPS+=("NetworkRADIUS repository configured")
+# Set FreeRADIUS package source. focal/jammy archives only carry FreeRADIUS
+# 3.0.x, so they use the NetworkRADIUS vendor repo (config root
+# /etc/freeradius). noble+ ships FreeRADIUS 3.2 in the Ubuntu archive with
+# security updates; its packaging keeps the config under /etc/freeradius/3.0.
+log_step "Configuring FreeRADIUS package source"
+if [[ "$UBUNTU_VERSION" == "focal" || "$UBUNTU_VERSION" == "jammy" ]]; then
+    install -d -o root -g root -m 0755 /etc/apt/keyrings || handle_error "Failed to create keyrings directory"
+    curl -s 'https://packages.networkradius.com/pgp/packages%40networkradius.com' | sudo tee /etc/apt/keyrings/packages.networkradius.com.asc > /dev/null || handle_error "Failed to download NetworkRADIUS PGP key"
+    printf 'Package: /freeradius/\nPin: origin "packages.networkradius.com"\nPin-Priority: 999\n' | sudo tee /etc/apt/preferences.d/networkradius > /dev/null || handle_error "Failed to set NetworkRADIUS preferences"
+    REPO_URL="http://packages.networkradius.com/freeradius-3.2/ubuntu/${UBUNTU_VERSION} ${UBUNTU_VERSION} main"
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.networkradius.com.asc] $REPO_URL" | sudo tee /etc/apt/sources.list.d/networkradius.list > /dev/null || handle_error "Failed to add NetworkRADIUS repository"
+    FREERADIUS_CONF_DIR="/etc/freeradius"
+    log_success "NetworkRADIUS repository configured for Ubuntu $UBUNTU_VERSION"
+else
+    # Ubuntu archive packages; remove NetworkRADIUS leftovers so reruns and
+    # migrated servers actually install from the archive.
+    rm -f /etc/apt/sources.list.d/networkradius.list /etc/apt/preferences.d/networkradius
+    FREERADIUS_CONF_DIR="/etc/freeradius/3.0"
+    log_success "Using Ubuntu archive FreeRADIUS packages"
+fi
+COMPLETED_STEPS+=("FreeRADIUS package source configured (config root: ${FREERADIUS_CONF_DIR})")
 
 # Set Valkey package source. Ubuntu ships Valkey in its own archive only from
 # noble (24.04, via noble-updates backport) onward; focal/jammy get Percona's
@@ -791,7 +792,7 @@ COMPLETED_STEPS+=("Firewall ports opened and ufw enabled")
 # Test FreeRADIUS configuration
 log_step "Checking FreeRADIUS files"
 
-if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
+if [ ! -f "${FREERADIUS_CONF_DIR}/radiusd.conf" ]; then
     log_info "FreeRADIUS configuration files missing, reinstalling and reconfiguring FreeRADIUS package"
     apt-get purge -y freeradius freeradius-common freeradius-config 2>/dev/null || echo "FreeRADIUS not installed"
     apt-get autoremove -y 2>/dev/null
@@ -799,10 +800,10 @@ if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
     dpkg-reconfigure -f noninteractive freeradius-config 2>/dev/null || echo "Reconfigure not needed"
 fi
 
-if [ ! -f "/etc/freeradius/radiusd.conf" ]; then
+if [ ! -f "${FREERADIUS_CONF_DIR}/radiusd.conf" ]; then
     log_info "Creating minimal radiusd.conf configuration"
-    mkdir -p /etc/freeradius || handle_error "Failed to create freeradius config dir"
-    cat > /etc/freeradius/radiusd.conf << 'EOF'
+    mkdir -p "${FREERADIUS_CONF_DIR}" || handle_error "Failed to create freeradius config dir"
+    cat > "${FREERADIUS_CONF_DIR}/radiusd.conf" << 'EOF'
 prefix = /usr
 exec_prefix = ${prefix}
 sysconfdir = /etc
@@ -873,30 +874,67 @@ $INCLUDE policy.d/
 instantiate {
 }
 EOF
-    chmod 644 /etc/freeradius/radiusd.conf || handle_error "Failed to set radiusd.conf permissions"
+    # The heredoc is quoted (it contains FreeRADIUS's own ${var} syntax), so
+    # patch raddbdir to the packaging-specific config root afterwards.
+    sed -i "s|^raddbdir = .*|raddbdir = ${FREERADIUS_CONF_DIR}|" "${FREERADIUS_CONF_DIR}/radiusd.conf" || handle_error "Failed to set raddbdir"
+    chmod 644 "${FREERADIUS_CONF_DIR}/radiusd.conf" || handle_error "Failed to set radiusd.conf permissions"
     log_success "Created minimal radiusd.conf configuration"
 fi
 
-if [ -f "/etc/freeradius/mods-available/sql" ]; then
-    ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/ || handle_error "Failed to re-enable SQL module"
+if [ -f "${FREERADIUS_CONF_DIR}/mods-available/sql" ]; then
+    ln -sf "${FREERADIUS_CONF_DIR}/mods-available/sql" "${FREERADIUS_CONF_DIR}/mods-enabled/" || handle_error "Failed to re-enable SQL module"
 fi
 COMPLETED_STEPS+=("Completed checking FreeRADIUS files")
 
-# Enable buffered-sql site
+# Write and enable the buffered-sql site. Accounting packets are written to
+# a local detail file by the default site (fast, survives DB stalls); this
+# virtual server tails that file and replays the records into SQL.
 log_step "Enabling FreeRADIUS buffered-sql site"
-mkdir -p /etc/freeradius/sites-enabled || handle_error "Failed to create FreeRADIUS sites-enabled directory"
-ln -sf /etc/freeradius/sites-available/buffered-sql /etc/freeradius/sites-enabled/buffered-sql || handle_error "Failed to enable buffered-sql site"
+mkdir -p "${FREERADIUS_CONF_DIR}/sites-available" "${FREERADIUS_CONF_DIR}/sites-enabled" || handle_error "Failed to create FreeRADIUS sites directories"
+cat > "${FREERADIUS_CONF_DIR}/sites-available/buffered-sql" << 'EOF'
+server buffered-sql {
+	listen {
+		type = detail
+		filename = "${radacctdir}/detail"
+		load_factor = 10
+		track = yes
+	}
+
+	preacct {
+		preprocess
+	}
+
+	accounting {
+		sql
+	}
+}
+EOF
+ln -sf "${FREERADIUS_CONF_DIR}/sites-available/buffered-sql" "${FREERADIUS_CONF_DIR}/sites-enabled/buffered-sql" || handle_error "Failed to enable buffered-sql site"
 COMPLETED_STEPS+=("FreeRADIUS buffered-sql site enabled")
+
+# Configure the detail module as a single-file writer that buffered-sql can
+# consume (the stock module writes per-NAS/per-day files the reader ignores).
+log_step "Configuring FreeRADIUS detail module"
+cat > "${FREERADIUS_CONF_DIR}/mods-available/detail" << 'EOF'
+detail {
+	filename = ${radacctdir}/detail
+	header = "%t"
+	permissions = 0600
+	locking = yes
+}
+EOF
+ln -sf "${FREERADIUS_CONF_DIR}/mods-available/detail" "${FREERADIUS_CONF_DIR}/mods-enabled/detail" || handle_error "Failed to enable detail module"
+COMPLETED_STEPS+=("FreeRADIUS detail module configured")
 
 # Enable SQL module for FreeRADIUS
 log_step "Enabling SQL module"
-mkdir -p /etc/freeradius/mods-enabled || handle_error "Failed to create FreeRADIUS mods-enabled directory"
-ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql || handle_error "Failed to enable SQL module"
+mkdir -p "${FREERADIUS_CONF_DIR}/mods-enabled" || handle_error "Failed to create FreeRADIUS mods-enabled directory"
+ln -sf "${FREERADIUS_CONF_DIR}/mods-available/sql" "${FREERADIUS_CONF_DIR}/mods-enabled/sql" || handle_error "Failed to enable SQL module"
 COMPLETED_STEPS+=("FreeRADIUS SQL module enabled")
 
 # Write new FreeRADIUS SQL module
 log_step "Writing new FreeRADIUS SQL module"
-SQL_FILE="/etc/freeradius/mods-available/sql"
+SQL_FILE="${FREERADIUS_CONF_DIR}/mods-available/sql"
 cat > "$SQL_FILE" <<EOF
 # -*- text -*-
 sql {
@@ -948,14 +986,15 @@ COMPLETED_STEPS+=("FreeRADIUS SQL module written with database credentials")
 
 # Configure FreeRADIUS default site
 log_step "Configuring FreeRADIUS default site"
-DEFAULT_SITE="/etc/freeradius/sites-enabled/default"
+DEFAULT_SITE="${FREERADIUS_CONF_DIR}/sites-enabled/default"
 if [ -f "$DEFAULT_SITE" ]; then
     sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql"
-    sed -i 's/^[[:space:]]*detail/#       detail/' "$DEFAULT_SITE" || handle_error "Failed to comment out detail line"
     log_step "Replacing accounting section in FreeRADIUS default site"
+    # Accounting writes to the local detail file only; the buffered-sql
+    # virtual server replays it into SQL (survives DB stalls/restarts).
     cat << 'EOF' > /tmp/new_accounting_block
 accounting {
-sql
+detail
 exec
 attr_filter.accounting_response
 }
@@ -974,6 +1013,16 @@ else
     handle_error "Default site configuration file not found"
 fi
 COMPLETED_STEPS+=("FreeRADIUS default site configured")
+
+# Validate the FreeRADIUS configuration now so wiring mistakes fail loudly
+# here instead of at the service restart later.
+log_step "Validating FreeRADIUS configuration"
+RAD_BIN="$(command -v freeradius || command -v radiusd)" || handle_error "FreeRADIUS binary not found"
+if ! "$RAD_BIN" -XC > /dev/null 2>&1; then
+    "$RAD_BIN" -XC 2>&1 | tail -n 20
+    handle_error "FreeRADIUS configuration validation failed (freeradius -XC)"
+fi
+COMPLETED_STEPS+=("FreeRADIUS configuration validated")
 
 # Apply Systemd Sandbox changes from the overrides
 systemctl daemon-reload || handle_error "Failed to reload systemd daemon"

@@ -61,14 +61,19 @@ rm -rf /var/www/html/.* 2>/dev/null
 log_step "Removing configuration directories"
 rm -rf /etc/nginx/sites-available/default 2>/dev/null
 rm -rf /etc/nginx/sites-enabled/default 2>/dev/null
-# Preserve FreeRADIUS base configuration, only remove application-specific configs
-if [ -d "/etc/freeradius" ]; then
-    # Remove application-specific FreeRADIUS configurations but preserve base system configs
-    rm -f /etc/freeradius/mods-enabled/sql 2>/dev/null
-    rm -f /etc/freeradius/mods-enabled/rest 2>/dev/null
+# Preserve FreeRADIUS base configuration, only remove application-specific
+# configs. Handle both packagings: NetworkRADIUS (/etc/freeradius) and the
+# Ubuntu archive (/etc/freeradius/3.0). The 3.0 dir nests inside the other,
+# so guard on mods-enabled existing rather than the root.
+for frdir in /etc/freeradius /etc/freeradius/3.0; do
+    [ -d "$frdir/mods-enabled" ] || continue
+    rm -f "$frdir/mods-enabled/sql" 2>/dev/null
+    rm -f "$frdir/mods-enabled/rest" 2>/dev/null
     # Remove any custom site configurations but preserve default
-    find /etc/freeradius/sites-enabled/ -name "*" ! -name "default" -delete 2>/dev/null
-fi
+    find "$frdir/sites-enabled/" -name "*" ! -name "default" -delete 2>/dev/null
+done
+# Remove the buffered accounting queue file
+rm -f /var/log/freeradius/radacct/detail* 2>/dev/null
 rm -rf /etc/openvpn 2>/dev/null
 rm -rf /etc/supervisor 2>/dev/null
 
