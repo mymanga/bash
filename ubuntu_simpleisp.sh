@@ -686,7 +686,7 @@ case $UBUNTU_VERSION in
     "focal"|"jammy"|"noble")
         echo "Installing OpenVPN for Ubuntu $UBUNTU_VERSION"
         export AUTO_INSTALL=y
-        curl -O https://raw.githubusercontent.com/simpleisp/bash/main/openvpn.sh || handle_error "Failed to download OpenVPN installer"
+        curl -O https://raw.githubusercontent.com/mymanga/bash/main/openvpn.sh || handle_error "Failed to download OpenVPN installer"
         chmod +x openvpn.sh || handle_error "Failed to make OpenVPN installer executable"
         ./openvpn.sh || handle_error "Failed to install OpenVPN"
 
@@ -966,7 +966,7 @@ COMPLETED_STEPS+=("All services enabled and restarted")
 # Install maintenance scripts (autotune, DB cleanup, OpenVPN sandbox fix)
 log_step "Installing maintenance scripts to /var/www/html/sh"
 for s in universal.sh db_cleanup.sh ovpn_fix.sh; do
-    curl -fsSL "https://raw.githubusercontent.com/simpleisp/bash/main/${s}" -o "/var/www/html/sh/${s}" || handle_error "Failed to download ${s}"
+    curl -fsSL "https://raw.githubusercontent.com/mymanga/bash/main/${s}" -o "/var/www/html/sh/${s}" || handle_error "Failed to download ${s}"
     chmod +x "/var/www/html/sh/${s}" || handle_error "Failed to make ${s} executable"
 done
 COMPLETED_STEPS+=("Maintenance scripts installed to /var/www/html/sh")
