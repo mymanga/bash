@@ -54,10 +54,9 @@ if [ -f "$CLEANUP_MARKER" ]; then
     log_info "Detected previous cleanup ($(cat $CLEANUP_MARKER))"
     log_info "Forcing reinstallation of critical directories and files"
     REINSTALL=true
-    
-    # Remove the marker file after handling it
-    rm -f "$CLEANUP_MARKER"
-    log_success "Cleanup marker processed and removed"
+    # The marker is removed only at the end of a successful install, so a
+    # failed run keeps reinstall mode active for the next attempt.
+    log_success "Cleanup marker processed"
 fi
 
 # Ensure script runs as root
@@ -537,7 +536,9 @@ COMPLETED_STEPS+=("Composer installed")
 
 # Configure Nginx
 log_step "Configuring Nginx"
-mv /etc/nginx/sites-available/default /etc/nginx/sites-available/default.bak || handle_error "Failed to backup default Nginx site"
+if [ -f /etc/nginx/sites-available/default ]; then
+    mv /etc/nginx/sites-available/default /etc/nginx/sites-available/default.bak || handle_error "Failed to backup default Nginx site"
+fi
 touch /etc/nginx/sites-available/default || handle_error "Failed to create new Nginx site"
 ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default || handle_error "Failed to symlink Nginx site"
 
@@ -681,6 +682,12 @@ COMPLETED_STEPS+=("RADIUS database indexes optimized")
 
 # Configure Supervisor for queue worker (Pre-created log dir fix)
 log_step "Configuring Supervisor for queue worker"
+# clean_server.sh wipes /etc/supervisor; restore the package config if a
+# failed run already consumed the reinstall marker.
+if [ ! -f /etc/supervisor/supervisord.conf ]; then
+    apt-get install --reinstall -y -o Dpkg::Options::="--force-confmiss" supervisor || handle_error "Failed to restore supervisor configuration"
+fi
+mkdir -p /etc/supervisor/conf.d || handle_error "Failed to create supervisor conf.d directory"
 mkdir -p /var/www/html/storage/logs || handle_error "Failed to create Laravel logs directory"
 cat > /etc/supervisor/conf.d/queue-worker.conf << "EOL"
 [program:queue-worker]
@@ -1018,6 +1025,10 @@ for service in nginx mariadb freeradius "$VALKEY_SERVICE" php${PHP_VERSION}-fpm;
         log_success "$service is running"
     fi
 done
+
+# Install finished: clear the reinstall marker only now, so failed runs
+# before this point keep reinstall mode for the next attempt.
+rm -f "$CLEANUP_MARKER"
 
 # Complete installation message
 log_success "Installation completed successfully!"
