@@ -138,6 +138,18 @@ if [[ "$UBUNTU_VERSION" == "focal" || "$UBUNTU_VERSION" == "jammy" ]]; then
     rm -f /tmp/percona-release_latest.deb
     percona-release enable valkey experimental || handle_error "Failed to enable Percona Valkey repository"
 
+    # Percona's valkey postinst runs "systemctl start valkey" itself, so any
+    # dpkg configure (fresh install, upgrade, or recovery of a previously
+    # failed run) needs the service to be startable. Pre-create the valkey
+    # account and writable data/log dirs, and relax a leftover config that
+    # hard-requires IPv6, BEFORE any apt operation touches the package.
+    getent passwd valkey >/dev/null || useradd --system --user-group --home-dir /var/lib/valkey --no-create-home --shell /usr/sbin/nologin valkey || handle_error "Failed to create valkey user"
+    mkdir -p /var/lib/valkey /var/log/valkey || handle_error "Failed to create Valkey data/log directories"
+    chown -R valkey:valkey /var/lib/valkey /var/log/valkey || handle_error "Failed to set Valkey directory ownership"
+    if [ -f /etc/valkey/valkey.conf ]; then
+        sed -i 's/^bind 0\.0\.0\.0 ::0$/bind 0.0.0.0 -::0/' /etc/valkey/valkey.conf || true
+    fi
+
     VALKEY_PACKAGES="valkey valkey-compat"
     VALKEY_SERVICE="valkey"
 else
