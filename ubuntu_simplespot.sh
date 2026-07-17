@@ -598,7 +598,7 @@ if [ -d "$LOCAL_PATH" ]; then
     rm -rf "$LOCAL_PATH" || handle_error "Failed to remove existing web root"
 fi
 
-git clone -b master "$REPO_URL" "$LOCAL_PATH" || handle_error "Failed to clone repository"
+git clone "$REPO_URL" "$LOCAL_PATH" || handle_error "Failed to clone repository"
 cd "$LOCAL_PATH" || handle_error "Failed to change directory to web root"
 
 # Install Laravel dependencies
