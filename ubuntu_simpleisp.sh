@@ -11,6 +11,9 @@ EMAIL_ADDRESS="simpluxsolutions@gmail.com"
 
 # Configuration variables - ONLY DIFFERENCES BETWEEN SCRIPTS
 GITHUB_REPO_URL="https://github.com/simpleisp/radius.git"
+# Do NOT bump: the SimpleISP panel (Laravel 8) has hardcoded code that breaks
+# on PHP > 7.4. The ondrej PPA provides php7.4 on every supported Ubuntu
+# release including noble, so 7.4 stays pinned regardless of OS version.
 PHP_VERSION="7.4"
 
 # Logging functions

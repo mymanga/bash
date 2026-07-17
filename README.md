@@ -18,7 +18,7 @@ sudo ./ubuntu_simpleisp.sh
 
 Each installer sets up the full stack:
 
-- **nginx** + **PHP-FPM** serving the Laravel panel from `/var/www/html` (with Let's Encrypt via certbot)
+- **nginx** + **PHP-FPM** serving the Laravel panel from `/var/www/html` (with Let's Encrypt via certbot). PHP is pinned per product — SimpleISP: **7.4** (the panel has code that breaks on newer PHP), SimpleSpot: **8.2** — and installs from the ondrej PPA on every supported Ubuntu release, so the pin holds on 24.04 too.
 - **MariaDB** (unix_socket root auth; credentials written to a file reported at the end of the install)
 - **FreeRADIUS 3.2** (NetworkRADIUS packages) with SQL accounting into the `radius` database
 - **Valkey** (Redis-compatible cache) with systemd hardening overrides — installed from Percona's repo on focal/jammy (service `valkey`), from the Ubuntu archive on noble (service `valkey-server`)
