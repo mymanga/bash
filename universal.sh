@@ -19,6 +19,11 @@
 # v3 (2026-07-14): CAPACITY MODEL - one sizing block scales every component
 #   from 2 vCPU / 2 GB to 16 vCPU / 16 GB (~5,000 concurrent users at top
 #   tier). Copy this script unchanged to any size server; it self-sizes.
+#
+# v3.1 (2026-07-17): Step 6b ensures buffered accounting wiring (default
+#   site -> detail file -> buffered-sql -> SQL) so accounting survives DB
+#   stalls/restarts; validated with -XC, rolled back on failure, restart
+#   reuses the changed-only logic. Idempotent on already-wired servers.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -684,6 +689,158 @@ else
   else
     rm -f "${TMP_RAD}" || true
     log "[DRY] would update radiusd.conf thread pool (validated with -XC, restart only if changed)"
+  fi
+fi
+
+log ""
+
+# ----------------------------------------------------------------------
+# Step 6b: Ensure buffered accounting wiring (detail -> buffered-sql).
+# The default site writes accounting to a local detail file and the
+# buffered-sql virtual server replays it into SQL, so records survive
+# MariaDB stalls/restarts. Mirrors the installers; idempotent, so
+# already-wired servers see no change and no restart.
+# ----------------------------------------------------------------------
+log "========================"
+log " Step 6b: Buffered accounting wiring (detail -> buffered-sql)"
+log "------------------------"
+
+if [ -z "${RADIUS_CONF}" ]; then
+  log "[WARN] radiusd.conf not found; skipping buffered accounting wiring."
+else
+  RAD_ROOT="$(dirname "${RADIUS_CONF}")"
+  BUFSQL_CHANGED=0
+  BUFSQL_TOUCHED=()   # files backed up this run, restored on failed validation
+  BUFSQL_NEW_LINKS=() # symlinks created this run, removed on failed validation
+
+  # Desired detail module: a single-file writer buffered-sql can consume
+  # (stock writes per-NAS/per-day files the reader ignores).
+  DETAIL_MOD="${RAD_ROOT}/mods-available/detail"
+  DETAIL_TMP="${DETAIL_MOD}.new"
+  cat > "${DETAIL_TMP}" << 'EOF'
+detail {
+	filename = ${radacctdir}/detail
+	header = "%t"
+	permissions = 0600
+	locking = yes
+}
+EOF
+
+  # Desired buffered-sql site: tail the detail file, replay into SQL.
+  BUFSQL_SITE="${RAD_ROOT}/sites-available/buffered-sql"
+  BUFSQL_TMP="${BUFSQL_SITE}.new"
+  cat > "${BUFSQL_TMP}" << 'EOF'
+server buffered-sql {
+	listen {
+		type = detail
+		filename = "${radacctdir}/detail"
+		load_factor = 10
+		track = yes
+	}
+
+	preacct {
+		preprocess
+	}
+
+	accounting {
+		sql
+	}
+}
+EOF
+
+  # Desired default site: accounting section writes to detail only (SQL
+  # happens in buffered-sql). Regenerating is stable, so cmp below makes
+  # this a no-op on already-converted servers.
+  RAD_DEFAULT_SITE="${RAD_ROOT}/sites-enabled/default"
+  RAD_DEFAULT_TMP=""
+  if [ -f "${RAD_DEFAULT_SITE}" ]; then
+    RAD_DEFAULT_TMP="${RAD_DEFAULT_SITE}.new"
+    awk '
+    BEGIN { skip = 0 }
+    /^accounting[ \t]*{/ {
+      print "accounting {"
+      print "detail"
+      print "exec"
+      print "attr_filter.accounting_response"
+      print "}"
+      skip = 1; next
+    }
+    /^[ \t]*}/ { if (skip) { skip = 0; next } }
+    !skip { print }
+    ' "${RAD_DEFAULT_SITE}" > "${RAD_DEFAULT_TMP}" || true
+  else
+    log "[WARN] ${RAD_DEFAULT_SITE} not found; accounting section left untouched"
+  fi
+
+  bufsql_install_if_changed() {
+    # $1 = live file, $2 = desired temp file. Returns 0 if a change was
+    # made (or would be, under --dry-run), 1 if already up to date.
+    local live="$1" tmp="$2"
+    if [ -f "${live}" ] && cmp -s "${live}" "${tmp}"; then
+      rm -f "${tmp}" || true
+      return 1
+    fi
+    if [ "$DRY_RUN" -eq 0 ]; then
+      if [ -f "${live}" ]; then
+        cp -a "${live}" "${live}.bak.${TIMESTAMP}"
+        prune_baks "${live}"
+        BUFSQL_TOUCHED+=("${live}")
+      fi
+      mv -f "${tmp}" "${live}"
+      log "[OK] updated ${live} (backup: ${live}.bak.${TIMESTAMP})"
+    else
+      rm -f "${tmp}" || true
+      log "[DRY] would update ${live}"
+    fi
+    return 0
+  }
+
+  if bufsql_install_if_changed "${DETAIL_MOD}" "${DETAIL_TMP}"; then BUFSQL_CHANGED=1; fi
+  if bufsql_install_if_changed "${BUFSQL_SITE}" "${BUFSQL_TMP}"; then BUFSQL_CHANGED=1; fi
+  if [ -n "${RAD_DEFAULT_TMP}" ]; then
+    if bufsql_install_if_changed "${RAD_DEFAULT_SITE}" "${RAD_DEFAULT_TMP}"; then BUFSQL_CHANGED=1; fi
+  fi
+
+  # Enable the detail module and buffered-sql site if not already enabled.
+  for pair in "mods-available/detail:mods-enabled/detail" "sites-available/buffered-sql:sites-enabled/buffered-sql"; do
+    BUFSQL_SRC="${RAD_ROOT}/${pair%%:*}"
+    BUFSQL_DST="${RAD_ROOT}/${pair##*:}"
+    if [ ! -e "${BUFSQL_DST}" ]; then
+      if [ "$DRY_RUN" -eq 0 ]; then
+        ln -sf "${BUFSQL_SRC}" "${BUFSQL_DST}"
+        BUFSQL_NEW_LINKS+=("${BUFSQL_DST}")
+        log "[OK] enabled ${BUFSQL_DST}"
+      else
+        log "[DRY] would enable ${BUFSQL_DST}"
+      fi
+      BUFSQL_CHANGED=1
+    fi
+  done
+
+  if [ "${BUFSQL_CHANGED}" -eq 0 ]; then
+    log "[OK] buffered accounting already wired; no change, no restart"
+  elif [ "$DRY_RUN" -eq 0 ]; then
+    # Queue directory must exist before validation/first write.
+    mkdir -p /var/log/freeradius/radacct 2>/dev/null || true
+    if id freerad >/dev/null 2>&1; then
+      chown freerad:freerad /var/log/freeradius/radacct 2>/dev/null || true
+    fi
+
+    # Validate BEFORE the restart at the end of the run; roll everything
+    # back on failure so a broken config never reaches the service.
+    RAD_BIN="$(command -v freeradius || command -v radiusd || true)"
+    if [ -n "${RAD_BIN}" ] && ! "${RAD_BIN}" -XC >/dev/null 2>&1; then
+      log "[ERROR] buffered accounting config FAILED validation (${RAD_BIN} -XC); rolling back"
+      for f in "${BUFSQL_TOUCHED[@]}"; do
+        if [ -f "${f}.bak.${TIMESTAMP}" ]; then cp -a "${f}.bak.${TIMESTAMP}" "${f}"; fi
+      done
+      for l in "${BUFSQL_NEW_LINKS[@]}"; do rm -f "${l}" || true; done
+    else
+      log "[OK] buffered accounting wiring applied and validated"
+      RADIUS_CHANGED=1  # reuse the existing end-of-run FreeRADIUS restart
+    fi
+  else
+    log "[DRY] would validate with -XC and restart FreeRADIUS if valid"
   fi
 fi
 
