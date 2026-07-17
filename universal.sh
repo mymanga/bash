@@ -748,14 +748,26 @@ server buffered-sql {
 }
 EOF
 
-  # Desired default site: accounting section writes to detail only (SQL
-  # happens in buffered-sql). Regenerating is stable, so cmp below makes
-  # this a no-op on already-converted servers.
-  RAD_DEFAULT_SITE="${RAD_ROOT}/sites-enabled/default"
+  # Desired default site, matching the installers exactly: -sql refs
+  # enabled and the accounting section writing to detail only (SQL happens
+  # in buffered-sql). Generated from the currently EFFECTIVE config -
+  # sites-enabled/default if present (older installers left an edited
+  # regular file there), else sites-available/default. Regeneration is
+  # stable, so cmp below makes this a no-op on already-converted servers.
+  RAD_DEFAULT_AVAIL="${RAD_ROOT}/sites-available/default"
+  RAD_DEFAULT_LINK="${RAD_ROOT}/sites-enabled/default"
   RAD_DEFAULT_TMP=""
-  if [ -f "${RAD_DEFAULT_SITE}" ]; then
-    RAD_DEFAULT_TMP="${RAD_DEFAULT_SITE}.new"
-    awk '
+  if [ -f "${RAD_DEFAULT_LINK}" ]; then
+    RAD_DEFAULT_SRC="${RAD_DEFAULT_LINK}"
+  elif [ -f "${RAD_DEFAULT_AVAIL}" ]; then
+    RAD_DEFAULT_SRC="${RAD_DEFAULT_AVAIL}"
+  else
+    RAD_DEFAULT_SRC=""
+    log "[WARN] default site not found under ${RAD_ROOT}; accounting section left untouched"
+  fi
+  if [ -n "${RAD_DEFAULT_SRC}" ]; then
+    RAD_DEFAULT_TMP="${RAD_DEFAULT_AVAIL}.new"
+    sed 's/-sql/sql/g' "${RAD_DEFAULT_SRC}" | awk '
     BEGIN { skip = 0 }
     /^accounting[ \t]*{/ {
       print "accounting {"
@@ -767,9 +779,7 @@ EOF
     }
     /^[ \t]*}/ { if (skip) { skip = 0; next } }
     !skip { print }
-    ' "${RAD_DEFAULT_SITE}" > "${RAD_DEFAULT_TMP}" || true
-  else
-    log "[WARN] ${RAD_DEFAULT_SITE} not found; accounting section left untouched"
+    ' > "${RAD_DEFAULT_TMP}" || true
   fi
 
   bufsql_install_if_changed() {
@@ -798,7 +808,27 @@ EOF
   if bufsql_install_if_changed "${DETAIL_MOD}" "${DETAIL_TMP}"; then BUFSQL_CHANGED=1; fi
   if bufsql_install_if_changed "${BUFSQL_SITE}" "${BUFSQL_TMP}"; then BUFSQL_CHANGED=1; fi
   if [ -n "${RAD_DEFAULT_TMP}" ]; then
-    if bufsql_install_if_changed "${RAD_DEFAULT_SITE}" "${RAD_DEFAULT_TMP}"; then BUFSQL_CHANGED=1; fi
+    if bufsql_install_if_changed "${RAD_DEFAULT_AVAIL}" "${RAD_DEFAULT_TMP}"; then BUFSQL_CHANGED=1; fi
+    # Normalize sites-enabled/default back to the packaged symlink layout:
+    # older installers replaced the symlink with an edited regular file.
+    # The content now lives (converted) in sites-available/default.
+    if [ ! -L "${RAD_DEFAULT_LINK}" ]; then
+      if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -f "${RAD_DEFAULT_LINK}" ]; then
+          cp -a "${RAD_DEFAULT_LINK}" "${RAD_DEFAULT_LINK}.bak.${TIMESTAMP}"
+          prune_baks "${RAD_DEFAULT_LINK}"
+          BUFSQL_TOUCHED+=("${RAD_DEFAULT_LINK}")
+          rm -f "${RAD_DEFAULT_LINK}"
+        else
+          BUFSQL_NEW_LINKS+=("${RAD_DEFAULT_LINK}")
+        fi
+        ln -sf "${RAD_DEFAULT_AVAIL}" "${RAD_DEFAULT_LINK}"
+        log "[OK] normalized ${RAD_DEFAULT_LINK} to a symlink -> ${RAD_DEFAULT_AVAIL}"
+      else
+        log "[DRY] would normalize ${RAD_DEFAULT_LINK} to a symlink -> ${RAD_DEFAULT_AVAIL}"
+      fi
+      BUFSQL_CHANGED=1
+    fi
   fi
 
   # Enable the detail module and buffered-sql site if not already enabled.
@@ -832,7 +862,9 @@ EOF
     if [ -n "${RAD_BIN}" ] && ! "${RAD_BIN}" -XC >/dev/null 2>&1; then
       log "[ERROR] buffered accounting config FAILED validation (${RAD_BIN} -XC); rolling back"
       for f in "${BUFSQL_TOUCHED[@]}"; do
-        if [ -f "${f}.bak.${TIMESTAMP}" ]; then cp -a "${f}.bak.${TIMESTAMP}" "${f}"; fi
+        # rm first: if the live path became a symlink this run, cp -a onto
+        # it would write through the link instead of replacing it.
+        if [ -f "${f}.bak.${TIMESTAMP}" ]; then rm -f "${f}"; cp -a "${f}.bak.${TIMESTAMP}" "${f}"; fi
       done
       for l in "${BUFSQL_NEW_LINKS[@]}"; do rm -f "${l}" || true; done
     else

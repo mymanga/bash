@@ -986,9 +986,18 @@ COMPLETED_STEPS+=("FreeRADIUS SQL module written with database credentials")
 
 # Configure FreeRADIUS default site
 log_step "Configuring FreeRADIUS default site"
+DEFAULT_SITE_AVAIL="${FREERADIUS_CONF_DIR}/sites-available/default"
 DEFAULT_SITE="${FREERADIUS_CONF_DIR}/sites-enabled/default"
-if [ -f "$DEFAULT_SITE" ]; then
-    sed -i 's/-sql/sql/g' "$DEFAULT_SITE" || handle_error "Failed to update -sql to sql"
+
+# Older installers edited sites-enabled/default in place, replacing the
+# packaged symlink with a regular file; recover that content if needed, then
+# always edit sites-available/default and re-link (the packaged layout).
+if [ ! -f "$DEFAULT_SITE_AVAIL" ] && [ -f "$DEFAULT_SITE" ] && [ ! -L "$DEFAULT_SITE" ]; then
+    mv "$DEFAULT_SITE" "$DEFAULT_SITE_AVAIL" || handle_error "Failed to recover default site into sites-available"
+fi
+
+if [ -f "$DEFAULT_SITE_AVAIL" ]; then
+    sed -i 's/-sql/sql/g' "$DEFAULT_SITE_AVAIL" || handle_error "Failed to update -sql to sql"
     log_step "Replacing accounting section in FreeRADIUS default site"
     # Accounting writes to the local detail file only; the buffered-sql
     # virtual server replays it into SQL (survives DB stalls/restarts).
@@ -1008,7 +1017,8 @@ EOF
         while ((getline line < file) > 0) print line;
         close(file)
     }
-    ' "$DEFAULT_SITE" > /tmp/tmp_site && mv /tmp/tmp_site "$DEFAULT_SITE"
+    ' "$DEFAULT_SITE_AVAIL" > /tmp/tmp_site && mv /tmp/tmp_site "$DEFAULT_SITE_AVAIL"
+    ln -sf "$DEFAULT_SITE_AVAIL" "$DEFAULT_SITE" || handle_error "Failed to enable default site"
 else
     handle_error "Default site configuration file not found"
 fi
