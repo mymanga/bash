@@ -775,6 +775,46 @@ www-data ALL=NOPASSWD: /var/www/html/sh/set_permissions.sh
 www-data ALL=NOPASSWD: /var/www/html/sh/restart-services.sh
 EOL
 fi
+
+# The panel also invokes systemctl by bare name (sudo resolves that via
+# secure_path to /usr/bin/systemctl) and checks the umbrella "openvpn"
+# unit - neither matches the /bin/... openvpn@server entries above, which
+# made the panel show OpenVPN as stopped. Separate guard so existing
+# servers gain these lines on rerun.
+if ! grep -qF '/usr/bin/systemctl status openvpn' /etc/sudoers; then
+cat >> /etc/sudoers << 'EOL'
+www-data ALL=NOPASSWD: /usr/bin/systemctl start openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl status openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl reload openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl enable openvpn@server
+www-data ALL=NOPASSWD: /usr/bin/systemctl disable openvpn@server
+www-data ALL=NOPASSWD: /bin/systemctl start openvpn
+www-data ALL=NOPASSWD: /bin/systemctl stop openvpn
+www-data ALL=NOPASSWD: /bin/systemctl restart openvpn
+www-data ALL=NOPASSWD: /bin/systemctl status openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl start openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl status openvpn
+www-data ALL=NOPASSWD: /usr/bin/systemctl start freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl stop freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl status freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl reload freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl enable freeradius
+www-data ALL=NOPASSWD: /usr/bin/systemctl disable freeradius
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl stop all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl reread
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl update
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl start all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl restart all
+www-data ALL=NOPASSWD: /usr/bin/supervisorctl status
+www-data ALL=NOPASSWD: /usr/bin/systemctl restart supervisor
+www-data ALL=NOPASSWD: /usr/bin/systemctl status ssh
+EOL
+fi
 COMPLETED_STEPS+=("Sudoers updated for www-data user")
 
 # Open Firewall Ports and enable ufw
