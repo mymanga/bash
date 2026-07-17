@@ -357,7 +357,7 @@ COMPLETED_STEPS+=("Valkey monitoring configured")
 
 # Add monitoring cron job (Safe Append Fix)
 log_step "Adding monitoring cron job"
-(crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/valkey-debug.sh") | crontab - || handle_error "Failed to install monitoring cron job"
+(crontab -l 2>/dev/null | grep -v 'valkey-debug\.sh'; echo "*/5 * * * * /usr/local/bin/valkey-debug.sh") | crontab - || handle_error "Failed to install monitoring cron job"
 COMPLETED_STEPS+=("Monitoring cron job added")
 
 # Verify Valkey is working
@@ -520,8 +520,9 @@ COMPLETED_STEPS+=("MariaDB installation secured")
 
 # Create database and user
 log_step "Creating database and user"
-mysql -e "CREATE DATABASE $MYSQL_DATABASE;" || handle_error "Failed to create database"
-mysql -e "CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD';" || handle_error "Failed to create database user"
+mysql -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DATABASE;" || handle_error "Failed to create database"
+mysql -e "CREATE USER IF NOT EXISTS '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD';" || handle_error "Failed to create database user"
+mysql -e "ALTER USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD';" || handle_error "Failed to set database user password"
 mysql -e "GRANT ALL PRIVILEGES ON $MYSQL_DATABASE.* TO '$MYSQL_USER'@'%';" || handle_error "Failed to grant database privileges"
 mysql -e "FLUSH PRIVILEGES;" || handle_error "Failed to flush MariaDB privileges"
 COMPLETED_STEPS+=("Database and user created with full access")
@@ -745,11 +746,13 @@ COMPLETED_STEPS+=("Systemd sandbox overrides configured")
 
 # Install Laravel cron (Safe Append Fix)
 log_step "Installing cron"
-(crontab -l 2>/dev/null; echo "* * * * * php /var/www/html/artisan schedule:run >> /dev/null 2>&1") | crontab - || handle_error "Failed to install Laravel cron job"
+(crontab -l 2>/dev/null | grep -v 'artisan schedule:run'; echo "* * * * * php /var/www/html/artisan schedule:run >> /dev/null 2>&1") | crontab - || handle_error "Failed to install Laravel cron job"
 COMPLETED_STEPS+=("Cron job installed")
 
 # Update sudoers for www-data user (Updated openvpn explicit target)
 log_step "Updating sudoers for www-data user"
+# Append only once - retries and reinstalls must not duplicate the block
+if ! grep -qF 'www-data ALL=NOPASSWD: /var/www/html/sh/restart-services.sh' /etc/sudoers; then
 cat >> /etc/sudoers << 'EOL'
 www-data ALL=NOPASSWD: /bin/systemctl start openvpn@server
 www-data ALL=NOPASSWD: /bin/systemctl stop openvpn@server
@@ -776,6 +779,7 @@ www-data ALL=NOPASSWD: /bin/systemctl status ssh
 www-data ALL=NOPASSWD: /var/www/html/sh/set_permissions.sh
 www-data ALL=NOPASSWD: /var/www/html/sh/restart-services.sh
 EOL
+fi
 COMPLETED_STEPS+=("Sudoers updated for www-data user")
 
 # Open Firewall Ports and enable ufw
@@ -1002,8 +1006,7 @@ COMPLETED_STEPS+=("Maintenance scripts installed to /var/www/html/sh")
 # reboot (delayed so MariaDB/Valkey/PHP-FPM are up before live tuning starts).
 # db_cleanup.sh is intentionally NOT scheduled - run it manually when needed.
 log_step "Scheduling maintenance cron jobs"
-(crontab -l 2>/dev/null; echo "0 3 * * * /var/www/html/sh/universal.sh") | crontab - || handle_error "Failed to add universal.sh daily cron job"
-(crontab -l 2>/dev/null; echo "@reboot sleep 120; /var/www/html/sh/universal.sh") | crontab - || handle_error "Failed to add universal.sh reboot cron job"
+(crontab -l 2>/dev/null | grep -v 'universal\.sh'; echo "0 3 * * * /var/www/html/sh/universal.sh"; echo "@reboot sleep 120; /var/www/html/sh/universal.sh") | crontab - || handle_error "Failed to schedule universal.sh cron jobs"
 COMPLETED_STEPS+=("Maintenance cron jobs scheduled (universal.sh 3AM + reboot)")
 
 # Run the autotune once to apply the initial configuration
