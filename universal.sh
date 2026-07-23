@@ -28,6 +28,13 @@
 # v3.2 (2026-07-17): Step 6c appends the /usr/bin systemctl/supervisorctl
 #   sudoers entries the panel actually invokes (plus the umbrella
 #   "openvpn" unit); validated with visudo -c, restored on failure.
+#
+# v3.3 (2026-07-23): the buffered-sql site now acknowledges Accounting-On/
+#   Off records whose bulk close query fails (a NAS-reboot record could
+#   jam the reader's retry loop and silently freeze accounting for hours);
+#   Step 6d installs a radacct-watchdog cron that spots a frozen
+#   detail.work and auto-applies the unjam (stop, set work file aside,
+#   start). Installers updated to write the same buffered-sql site.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -748,6 +755,18 @@ server buffered-sql {
 
 	accounting {
 		sql
+
+		#  Accounting-On/Off makes sql run a bulk close-all-sessions
+		#  query for the NAS. If that one query fails, the reader
+		#  retries the record forever and jams every record queued
+		#  behind it, so acknowledge and drop just these two types.
+		#  Session records keep retrying until SQL accepts them -
+		#  that is the point of the buffer.
+		if (fail) {
+			if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
+				ok
+			}
+		}
 	}
 }
 EOF
@@ -939,6 +958,104 @@ EOF
   fi
 else
   log "[DRY] would append /usr/bin systemctl/supervisorctl sudoers entries for www-data"
+fi
+
+log ""
+
+# ----------------------------------------------------------------------
+# Step 6d: radacct watchdog (auto-unjam a stalled detail reader).
+# A healthy buffered-sql reader either has no detail.work (idle: the
+# file is deleted once fully replayed) or keeps touching it as it marks
+# processed entries (track = yes). A detail.work mtime frozen while
+# FreeRADIUS is up means the reader is wedged (a record SQL keeps
+# rejecting, or an unclean shutdown) and accounting silently stops
+# reaching the panel. The watchdog applies the manual fix: stop, set
+# the work file aside for post-mortem, start. Loss is bounded to that
+# file - open sessions are rebuilt by their next interim update.
+# Idempotent.
+# ----------------------------------------------------------------------
+log "========================"
+log " Step 6d: radacct watchdog (auto-unjam stalled detail reader)"
+log "------------------------"
+
+if [ -z "${RADIUS_CONF}" ]; then
+  log "[WARN] radiusd.conf not found; skipping radacct watchdog."
+else
+  WATCHDOG_BIN="/usr/local/sbin/radacct-watchdog.sh"
+  WATCHDOG_CRON="/etc/cron.d/radacct-watchdog"
+  WATCHDOG_CHANGED=0
+
+  WATCHDOG_TMP="${WATCHDOG_BIN}.new"
+  cat > "${WATCHDOG_TMP}" << 'WDOG'
+#!/bin/bash
+# Installed by universal.sh (Step 6d). Unjams the FreeRADIUS
+# buffered-sql detail reader: a detail.work whose mtime is frozen for
+# STALE_MIN minutes while the service is up means the reader is wedged
+# and no accounting is reaching SQL. Stop, set the work file aside
+# (kept for post-mortem), start; the reader resumes on a fresh queue
+# and open sessions reappear on their next interim update.
+set -u
+
+WORK="/var/log/freeradius/radacct/detail.work"
+WLOG="/var/log/radacct-watchdog.log"
+STALE_MIN=15
+
+exec 9>"/var/lock/radacct-watchdog.lock"
+flock -n 9 || exit 0
+
+SVC=""
+for s in freeradius radiusd; do
+  if systemctl is-active --quiet "$s" 2>/dev/null; then SVC="$s"; break; fi
+done
+[ -n "$SVC" ] || exit 0   # service stopped on purpose is not a jam
+[ -f "$WORK" ] || exit 0  # no work file: reader idle and healthy
+
+# find prints the path only when mtime is older than the cutoff
+find "$WORK" -mmin "+${STALE_MIN}" 2>/dev/null | grep -q . || exit 0
+
+TS="$(date +%Y%m%d_%H%M%S)"
+echo "[$(date '+%F %T')] detail.work frozen >${STALE_MIN}m; unjamming (kept: ${WORK}.stuck.${TS})" >> "$WLOG"
+systemctl stop "$SVC"
+mv "$WORK" "${WORK}.stuck.${TS}"
+systemctl start "$SVC"
+echo "[$(date '+%F %T')] ${SVC} restarted; reader resumed on a fresh queue" >> "$WLOG"
+
+# keep a week of post-mortem files
+find "$(dirname "$WORK")" -maxdepth 1 -name 'detail.work.stuck.*' -mtime +7 -delete 2>/dev/null || true
+WDOG
+
+  WATCHDOG_CRON_TMP="${WATCHDOG_CRON}.new"
+  cat > "${WATCHDOG_CRON_TMP}" << 'EOF'
+# Installed by universal.sh (Step 6d): auto-unjam a stalled buffered-sql reader.
+*/5 * * * * root /usr/local/sbin/radacct-watchdog.sh
+EOF
+
+  watchdog_install_if_changed() {
+    # $1 = live file, $2 = desired temp file, $3 = mode. Returns 0 if a
+    # change was made (or would be, under --dry-run), 1 if up to date.
+    local live="$1" tmp="$2" mode="$3"
+    if [ -f "${live}" ] && cmp -s "${live}" "${tmp}"; then
+      rm -f "${tmp}" || true
+      chmod "${mode}" "${live}" 2>/dev/null || true
+      return 1
+    fi
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mv -f "${tmp}" "${live}"
+      chmod "${mode}" "${live}"
+      log "[OK] installed ${live}"
+    else
+      rm -f "${tmp}" || true
+      log "[DRY] would install ${live}"
+    fi
+    return 0
+  }
+
+  if watchdog_install_if_changed "${WATCHDOG_BIN}" "${WATCHDOG_TMP}" 0755; then WATCHDOG_CHANGED=1; fi
+  if watchdog_install_if_changed "${WATCHDOG_CRON}" "${WATCHDOG_CRON_TMP}" 0644; then WATCHDOG_CHANGED=1; fi
+
+  if [ "${WATCHDOG_CHANGED}" -eq 0 ]; then
+    log "[OK] radacct watchdog already installed; no change"
+  fi
 fi
 
 log ""

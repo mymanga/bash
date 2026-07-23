@@ -946,6 +946,18 @@ server buffered-sql {
 
 	accounting {
 		sql
+
+		#  Accounting-On/Off makes sql run a bulk close-all-sessions
+		#  query for the NAS. If that one query fails, the reader
+		#  retries the record forever and jams every record queued
+		#  behind it, so acknowledge and drop just these two types.
+		#  Session records keep retrying until SQL accepts them -
+		#  that is the point of the buffer.
+		if (fail) {
+			if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
+				ok
+			}
+		}
 	}
 }
 EOF
