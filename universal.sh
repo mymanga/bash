@@ -64,6 +64,13 @@
 #   on NAS-reboot records) is silent and needs babysitting. Step 6b now
 #   converges to accounting { sql } and disables the buffered-sql site
 #   + detail module links; Step 6d removes the watchdog it installed.
+#
+# v3.5.1 (2026-07-23): Step 6e installs a radacct-reconcile cron with
+#   thresholds scaled to the 1-minute interim cadence: every minute,
+#   close open rows silent 5+ min and reopen closed rows still
+#   reporting (freshness-guarded so replayed timestamps cannot
+#   resurrect dead rows). Adds idx_radacct_stop_update
+#   (acctstoptime, acctupdatetime) so both statements stay cheap.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -472,6 +479,7 @@ declare -a IDX_SPECS=(
   "radacct|idx_radacct_user_time|username(50),acctstarttime"
   "radacct|idx_radacct_nas_ip|nasipaddress"
   "radacct|idx_radacct_framed|framedipaddress"
+  "radacct|idx_radacct_stop_update|acctstoptime,acctupdatetime"
   "radpostauth|idx_authdate|authdate"
   "radcheck|idx_username|username"
   "radreply|idx_username_attr|username,attribute"
@@ -985,6 +993,88 @@ for f in /etc/cron.d/radacct-watchdog /usr/local/sbin/radacct-watchdog.sh; do
 done
 if [ "${WATCHDOG_REMOVED}" -eq 0 ]; then
   log "[OK] radacct watchdog not present; nothing to remove"
+fi
+
+log ""
+
+# ----------------------------------------------------------------------
+# Step 6e: radacct reconcile cron (open/closed state <- 1-min interims).
+# With interim-update=1m on every NAS, freshness of acctupdatetime IS
+# session liveness. Every minute, converge radacct in both directions:
+#   close  - open rows silent for 5+ minutes (Stop was lost);
+#   reopen - closed rows still reporting (a sweep or bulk close caught
+#            a live session; interims update closed rows but nothing
+#            else ever reopens them).
+# The pair is self-correcting: a server outage that lets rows go silent
+# closes them, and the first interim after recovery reopens the ones
+# still alive. The reopen's freshness guard keeps replayed/backdated
+# timestamps from resurrecting dead rows. Idempotent.
+# ----------------------------------------------------------------------
+log "========================"
+log " Step 6e: radacct reconcile cron (1-min interim liveness)"
+log "------------------------"
+
+RECON_BIN="/usr/local/sbin/radacct-reconcile.sh"
+RECON_CRON="/etc/cron.d/radacct-reconcile"
+RECON_CHANGED=0
+
+RECON_TMP="${RECON_BIN}.new"
+cat > "${RECON_TMP}" << 'RECON'
+#!/bin/bash
+# Installed by universal.sh (Step 6e). Converges radacct's open/closed
+# state with reality, scaled to the 1-minute interim cadence: a session
+# silent for 5+ minutes is dead; a "closed" row still receiving fresh
+# interims is alive. Both statements are idempotent and cheap (covered
+# by idx_radacct_stop_update).
+set -u
+
+exec 9>"/var/lock/radacct-reconcile.lock"
+flock -n 9 || exit 0
+command -v mysql >/dev/null 2>&1 || exit 0
+
+mysql radius -e "
+UPDATE radacct SET acctstoptime = acctupdatetime, acctterminatecause = 'Stale-Session'
+ WHERE acctstoptime IS NULL
+   AND acctupdatetime < NOW() - INTERVAL 5 MINUTE;
+UPDATE radacct SET acctstoptime = NULL, acctterminatecause = ''
+ WHERE acctstoptime IS NOT NULL
+   AND acctupdatetime > NOW() - INTERVAL 5 MINUTE
+   AND acctupdatetime > acctstoptime + INTERVAL 1 MINUTE;
+" 2>/dev/null
+RECON
+
+RECON_CRON_TMP="${RECON_CRON}.new"
+cat > "${RECON_CRON_TMP}" << 'EOF'
+# Installed by universal.sh (Step 6e): converge radacct open/closed state
+# with the 1-minute interim heartbeat.
+* * * * * root /usr/local/sbin/radacct-reconcile.sh
+EOF
+
+recon_install_if_changed() {
+  # $1 = live file, $2 = desired temp file, $3 = mode. Returns 0 if a
+  # change was made (or would be, under --dry-run), 1 if up to date.
+  local live="$1" tmp="$2" mode="$3"
+  if [ -f "${live}" ] && cmp -s "${live}" "${tmp}"; then
+    rm -f "${tmp}" || true
+    chmod "${mode}" "${live}" 2>/dev/null || true
+    return 1
+  fi
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mv -f "${tmp}" "${live}"
+    chmod "${mode}" "${live}"
+    log "[OK] installed ${live}"
+  else
+    rm -f "${tmp}" || true
+    log "[DRY] would install ${live}"
+  fi
+  return 0
+}
+
+if recon_install_if_changed "${RECON_BIN}" "${RECON_TMP}" 0755; then RECON_CHANGED=1; fi
+if recon_install_if_changed "${RECON_CRON}" "${RECON_CRON_TMP}" 0644; then RECON_CHANGED=1; fi
+
+if [ "${RECON_CHANGED}" -eq 0 ]; then
+  log "[OK] radacct reconcile cron already installed; no change"
 fi
 
 log ""
