@@ -40,6 +40,11 @@
 #   section - the default action for a failed module is to return from
 #   the section, so the v3.3 if (fail) Accounting-On/Off check was never
 #   reached and a NAS reboot jammed the reader again despite the fix.
+#
+# v3.3.2 (2026-07-23): faster watchdog - STALE_MIN 15->5 and cron every
+#   minute (detects a wedge in ~5-6 min instead of 15-20), gated on
+#   mysqladmin ping so a genuine MariaDB outage keeps buffering instead
+#   of having its work file set aside.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -1008,7 +1013,7 @@ set -u
 
 WORK="/var/log/freeradius/radacct/detail.work"
 WLOG="/var/log/radacct-watchdog.log"
-STALE_MIN=15
+STALE_MIN=5
 
 exec 9>"/var/lock/radacct-watchdog.lock"
 flock -n 9 || exit 0
@@ -1022,6 +1027,13 @@ done
 
 # find prints the path only when mtime is older than the cutoff
 find "$WORK" -mmin "+${STALE_MIN}" 2>/dev/null | grep -q . || exit 0
+
+# Only unjam while MariaDB answers: a frozen reader during a DB outage
+# is the buffer doing its job (records replay once the DB returns), and
+# setting the work file aside then would discard them for nothing.
+if command -v mysqladmin >/dev/null 2>&1; then
+  mysqladmin --connect-timeout=5 ping >/dev/null 2>&1 || exit 0
+fi
 
 TS="$(date +%Y%m%d_%H%M%S)"
 echo "[$(date '+%F %T')] detail.work frozen >${STALE_MIN}m; unjamming (kept: ${WORK}.stuck.${TS})" >> "$WLOG"
@@ -1037,7 +1049,7 @@ WDOG
   WATCHDOG_CRON_TMP="${WATCHDOG_CRON}.new"
   cat > "${WATCHDOG_CRON_TMP}" << 'EOF'
 # Installed by universal.sh (Step 6d): auto-unjam a stalled buffered-sql reader.
-*/5 * * * * root /usr/local/sbin/radacct-watchdog.sh
+* * * * * root /usr/local/sbin/radacct-watchdog.sh
 EOF
 
   watchdog_install_if_changed() {
