@@ -945,7 +945,12 @@ server buffered-sql {
 	}
 
 	accounting {
-		sql
+		#  fail = 1 overrides the default action for a failed sql
+		#  (return), which would exit the section before the check
+		#  below ever runs.
+		sql {
+			fail = 1
+		}
 
 		#  Accounting-On/Off makes sql run a bulk close-all-sessions
 		#  query for the NAS. If that one query fails, the reader

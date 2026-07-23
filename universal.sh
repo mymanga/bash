@@ -35,6 +35,11 @@
 #   Step 6d installs a radacct-watchdog cron that spots a frozen
 #   detail.work and auto-applies the unjam (stop, set work file aside,
 #   start). Installers updated to write the same buffered-sql site.
+#
+# v3.3.1 (2026-07-23): sql { fail = 1 } in the buffered-sql accounting
+#   section - the default action for a failed module is to return from
+#   the section, so the v3.3 if (fail) Accounting-On/Off check was never
+#   reached and a NAS reboot jammed the reader again despite the fix.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -754,7 +759,12 @@ server buffered-sql {
 	}
 
 	accounting {
-		sql
+		#  fail = 1 overrides the default action for a failed sql
+		#  (return), which would exit the section before the check
+		#  below ever runs.
+		sql {
+			fail = 1
+		}
 
 		#  Accounting-On/Off makes sql run a bulk close-all-sessions
 		#  query for the NAS. If that one query fails, the reader
