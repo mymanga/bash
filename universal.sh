@@ -71,6 +71,13 @@
 #   reporting (freshness-guarded so replayed timestamps cannot
 #   resurrect dead rows). Adds idx_radacct_stop_update
 #   (acctstoptime, acctupdatetime) so both statements stay cheap.
+#
+# v3.5.2 (2026-07-23): FreeRADIUS $INCLUDEs sites-enabled/ and
+#   mods-enabled/ wholesale, so the .bak files earlier versions wrote
+#   next to live files there were parsed as duplicate servers and
+#   freeradius could not start ("Duplicate virtual server"). Backups of
+#   files in those directories now go to CONF_BACKUP_DIR, and Step 6b
+#   sweeps strays left by v3.1-v3.5 - repairing servers stuck failing.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -766,6 +773,23 @@ else
   BUFSQL_TOUCHED=()        # files backed up this run, restored on failed validation
   BUFSQL_NEW_LINKS=()      # symlinks created this run, removed on failed validation
   BUFSQL_REMOVED_LINKS=()  # "link:target" removed this run, re-created on failed validation
+  BUFSQL_MOVED=()          # "live:backup" pairs whose backup lives in CONF_BACKUP_DIR
+
+  # FreeRADIUS $INCLUDEs sites-enabled/ and mods-enabled/ wholesale, so ANY
+  # extra file there - including a backup - is parsed, and a duplicated
+  # virtual server kills startup (bug in v3.1-v3.5: backups were written
+  # next to the live file). Sweep strays into the backup dir; this alone
+  # repairs servers that could no longer restart freeradius.
+  for stray in "${RAD_ROOT}"/sites-enabled/*.bak.* "${RAD_ROOT}"/mods-enabled/*.bak.*; do
+    { [ -e "$stray" ] || [ -L "$stray" ]; } || continue
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mv -f "$stray" "${CONF_BACKUP_DIR}/" || true
+      log "[OK] moved stray backup ${stray} out of \$INCLUDEd dir -> ${CONF_BACKUP_DIR}/"
+    else
+      log "[DRY] would move stray backup ${stray} -> ${CONF_BACKUP_DIR}/"
+    fi
+    BUFSQL_CHANGED=1
+  done
 
   # Desired default site, matching the installers exactly: -sql refs
   # enabled and the accounting section writing straight to sql.
@@ -840,9 +864,11 @@ else
     if [ ! -L "${RAD_DEFAULT_LINK}" ]; then
       if [ "$DRY_RUN" -eq 0 ]; then
         if [ -f "${RAD_DEFAULT_LINK}" ]; then
-          cp -a "${RAD_DEFAULT_LINK}" "${RAD_DEFAULT_LINK}.bak.${TIMESTAMP}"
-          prune_baks "${RAD_DEFAULT_LINK}"
-          BUFSQL_TOUCHED+=("${RAD_DEFAULT_LINK}")
+          # Backup must NOT live in sites-enabled/ - FreeRADIUS $INCLUDEs
+          # that directory and would parse it as a duplicate server.
+          RAD_LINK_BAK="${CONF_BACKUP_DIR}/sites-enabled-default_${TIMESTAMP}"
+          cp -a "${RAD_DEFAULT_LINK}" "${RAD_LINK_BAK}"
+          BUFSQL_MOVED+=("${RAD_DEFAULT_LINK}:${RAD_LINK_BAK}")
           rm -f "${RAD_DEFAULT_LINK}"
         else
           BUFSQL_NEW_LINKS+=("${RAD_DEFAULT_LINK}")
@@ -867,10 +893,11 @@ else
           BUFSQL_REMOVED_LINKS+=("${BUFSQL_DST}:$(readlink "${BUFSQL_DST}")")
           rm -f "${BUFSQL_DST}"
         else
-          # Older installs sometimes left a regular file here.
-          cp -a "${BUFSQL_DST}" "${BUFSQL_DST}.bak.${TIMESTAMP}"
-          prune_baks "${BUFSQL_DST}"
-          BUFSQL_TOUCHED+=("${BUFSQL_DST}")
+          # Older installs sometimes left a regular file here. Its backup
+          # must NOT stay in this $INCLUDEd directory (see sweep above).
+          BUFSQL_FILE_BAK="${CONF_BACKUP_DIR}/$(basename "${BUFSQL_DST}")_${TIMESTAMP}"
+          cp -a "${BUFSQL_DST}" "${BUFSQL_FILE_BAK}"
+          BUFSQL_MOVED+=("${BUFSQL_DST}:${BUFSQL_FILE_BAK}")
           rm -f "${BUFSQL_DST}"
         fi
         log "[OK] disabled ${BUFSQL_DST}"
@@ -895,6 +922,11 @@ else
         if [ -f "${f}.bak.${TIMESTAMP}" ]; then rm -f "${f}"; cp -a "${f}.bak.${TIMESTAMP}" "${f}"; fi
       done
       for l in "${BUFSQL_NEW_LINKS[@]}"; do rm -f "${l}" || true; done
+      for m in "${BUFSQL_MOVED[@]}"; do
+        # rm first so a path that became a symlink this run is replaced,
+        # not written through.
+        rm -f "${m%%:*}"; cp -a "${m#*:}" "${m%%:*}" || true
+      done
       for l in "${BUFSQL_REMOVED_LINKS[@]}"; do ln -sf "${l#*:}" "${l%%:*}" || true; done
     else
       log "[OK] direct accounting wiring applied and validated"
