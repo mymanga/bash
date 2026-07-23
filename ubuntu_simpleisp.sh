@@ -1059,20 +1059,38 @@ fi
 if [ -f "$DEFAULT_SITE_AVAIL" ]; then
     sed -i 's/-sql/sql/g' "$DEFAULT_SITE_AVAIL" || handle_error "Failed to update -sql to sql"
     log_step "Replacing accounting section in FreeRADIUS default site"
-    # Accounting writes to the local detail file only; the buffered-sql
-    # virtual server replays it into SQL (survives DB stalls/restarts).
+    # Session records queue to the local detail file only; the buffered-sql
+    # virtual server replays them into SQL (survives DB stalls/restarts).
+    # Accounting-On/Off go to sql synchronously instead: NAS-reboot records
+    # crash the detail reader thread and freeze the queue, so they must
+    # never enter it.
     cat << 'EOF' > /tmp/new_accounting_block
 accounting {
+if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
+sql {
+fail = 1
+}
+ok
+}
+else {
 detail
+}
 exec
 attr_filter.accounting_response
 }
 EOF
+    # Brace-counting skip (comments stripped): the replaced section can be
+    # the nested block above on re-runs, where "end at first }" corrupts it.
     awk '
-    BEGIN { skip = 0 }
-    /^accounting[ \t]*{/ { print_block = 1; print_file("/tmp/new_accounting_block"); skip = 1; next }
-    /^[ \t]*}/ { if (skip) { skip = 0; next } }
-    !skip { print }
+    BEGIN { skip = 0; depth = 0 }
+    /^accounting[ \t]*{/ { print_file("/tmp/new_accounting_block"); skip = 1; depth = 1; next }
+    skip {
+        s = $0; sub(/#.*/, "", s)
+        depth += gsub(/{/, "{", s) - gsub(/}/, "}", s)
+        if (depth <= 0) skip = 0
+        next
+    }
+    { print }
     function print_file(file) {
         while ((getline line < file) > 0) print line;
         close(file)

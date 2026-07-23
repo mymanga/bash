@@ -45,6 +45,16 @@
 #   minute (detects a wedge in ~5-6 min instead of 15-20), gated on
 #   mysqladmin ping so a genuine MariaDB outage keeps buffering instead
 #   of having its work file set aside.
+#
+# v3.4 (2026-07-23): Accounting-On/Off never enters the buffered queue.
+#   Root cause of the day's jams: the detail reader thread dies silently
+#   on NAS-reboot records (frozen detail.work, idle SQL connections, no
+#   error until "Reader thread exited without informing the master" at
+#   the next stop) - not a failing SQL query, so the v3.3.x unlang
+#   tolerance could never fire. The default site now runs sql
+#   synchronously for On/Off (fail-tolerant, always acked) and queues
+#   only session records to detail. Both site rewriters are now
+#   brace-aware so regenerating the nested section stays idempotent.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -787,8 +797,13 @@ server buffered-sql {
 EOF
 
   # Desired default site, matching the installers exactly: -sql refs
-  # enabled and the accounting section writing to detail only (SQL happens
-  # in buffered-sql). Generated from the currently EFFECTIVE config -
+  # enabled and the accounting section queueing session records to detail
+  # only (SQL happens in buffered-sql) - EXCEPT Accounting-On/Off, which
+  # are handled synchronously via sql. NAS-reboot records crash the
+  # detail reader thread (frozen detail.work, idle SQL connections,
+  # "Reader thread exited without informing the master" on the next
+  # stop), so they must never enter the buffered queue.
+  # Generated from the currently EFFECTIVE config -
   # sites-enabled/default if present (older installers left an edited
   # regular file there), else sites-available/default. Regeneration is
   # stable, so cmp below makes this a no-op on already-converted servers.
@@ -805,18 +820,34 @@ EOF
   fi
   if [ -n "${RAD_DEFAULT_SRC}" ]; then
     RAD_DEFAULT_TMP="${RAD_DEFAULT_AVAIL}.new"
+    # The skip logic counts braces (comments stripped) because the
+    # generated section is nested; ending at the first "}" would leave
+    # fragments of the old section behind on re-runs.
     sed 's/-sql/sql/g' "${RAD_DEFAULT_SRC}" | awk '
-    BEGIN { skip = 0 }
+    BEGIN { skip = 0; depth = 0 }
     /^accounting[ \t]*{/ {
       print "accounting {"
+      print "if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {"
+      print "sql {"
+      print "fail = 1"
+      print "}"
+      print "ok"
+      print "}"
+      print "else {"
       print "detail"
+      print "}"
       print "exec"
       print "attr_filter.accounting_response"
       print "}"
-      skip = 1; next
+      skip = 1; depth = 1; next
     }
-    /^[ \t]*}/ { if (skip) { skip = 0; next } }
-    !skip { print }
+    skip {
+      s = $0; sub(/#.*/, "", s)
+      depth += gsub(/{/, "{", s) - gsub(/}/, "}", s)
+      if (depth <= 0) skip = 0
+      next
+    }
+    { print }
     ' > "${RAD_DEFAULT_TMP}" || true
   fi
 
