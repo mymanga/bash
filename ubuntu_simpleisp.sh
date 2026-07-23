@@ -1040,6 +1040,25 @@ else
 fi
 COMPLETED_STEPS+=("FreeRADIUS default site configured")
 
+# Clean the $INCLUDEd dirs before validating: FreeRADIUS parses EVERY file
+# in sites-enabled/ and mods-enabled/, so stray .bak files (written there
+# by universal.sh v3.1-v3.5) fail startup with "Duplicate virtual server",
+# and the retired buffered-sql/detail links should not survive a reinstall.
+log_step "Cleaning FreeRADIUS enabled dirs (retired buffered wiring, stray backups)"
+mkdir -p /var/backups/universal/conf
+for stale in "${FREERADIUS_CONF_DIR}/sites-enabled/buffered-sql" "${FREERADIUS_CONF_DIR}/mods-enabled/detail"; do
+    if [ -L "$stale" ]; then
+        rm -f "$stale"
+    elif [ -f "$stale" ]; then
+        mv -f "$stale" /var/backups/universal/conf/ || rm -f "$stale"
+    fi
+done
+for stray in "${FREERADIUS_CONF_DIR}"/sites-enabled/*.bak.* "${FREERADIUS_CONF_DIR}"/mods-enabled/*.bak.*; do
+    { [ -e "$stray" ] || [ -L "$stray" ]; } || continue
+    mv -f "$stray" /var/backups/universal/conf/ || rm -f "$stray"
+done
+COMPLETED_STEPS+=("FreeRADIUS enabled dirs cleaned")
+
 # Validate the FreeRADIUS configuration now so wiring mistakes fail loudly
 # here instead of at the service restart later.
 log_step "Validating FreeRADIUS configuration"
