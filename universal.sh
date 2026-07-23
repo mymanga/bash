@@ -1431,7 +1431,24 @@ log "[OK] MariaDB: dynamic settings already applied live (Step 5); no restart"
 log "[OK] Valkey: settings already applied live (Step 5b); no restart"
 log "[OK] PHP-FPM: reload handled in Step 7 (only when pool config changed)"
 
-if [ "${RADIUS_CHANGED:-0}" -eq 1 ]; then
+# Also recover a DOWN freeradius even when nothing changed this run:
+# universal.sh fires @reboot, so this brings the service back after a
+# failed boot-time start (e.g. stray sites-enabled backups pre-v3.5.2)
+# once the config validates again.
+RADIUS_DOWN=0
+if [ "$DRY_RUN" -eq 0 ] \
+   && ! systemctl is-active --quiet freeradius 2>/dev/null \
+   && ! systemctl is-active --quiet radiusd 2>/dev/null; then
+  RAD_BIN="$(command -v freeradius || command -v radiusd || true)"
+  if [ -n "${RAD_BIN}" ] && "${RAD_BIN}" -XC >/dev/null 2>&1; then
+    RADIUS_DOWN=1
+    log "[WARN] FreeRADIUS is not running but the config validates; attempting recovery start"
+  elif [ -n "${RAD_BIN}" ]; then
+    log "[ERROR] FreeRADIUS is not running and the config FAILS validation (${RAD_BIN} -XC); manual attention required"
+  fi
+fi
+
+if [ "${RADIUS_CHANGED:-0}" -eq 1 ] || [ "${RADIUS_DOWN}" -eq 1 ]; then
   RAD_RESTARTED=0
   for candidate in freeradius radiusd; do
     if restart_and_check "$candidate"; then
