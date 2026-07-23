@@ -926,62 +926,8 @@ if [ -f "${FREERADIUS_CONF_DIR}/mods-available/sql" ]; then
 fi
 COMPLETED_STEPS+=("Completed checking FreeRADIUS files")
 
-# Write and enable the buffered-sql site. Accounting packets are written to
-# a local detail file by the default site (fast, survives DB stalls); this
-# virtual server tails that file and replays the records into SQL.
-log_step "Enabling FreeRADIUS buffered-sql site"
-mkdir -p "${FREERADIUS_CONF_DIR}/sites-available" "${FREERADIUS_CONF_DIR}/sites-enabled" || handle_error "Failed to create FreeRADIUS sites directories"
-cat > "${FREERADIUS_CONF_DIR}/sites-available/buffered-sql" << 'EOF'
-server buffered-sql {
-	listen {
-		type = detail
-		filename = "${radacctdir}/detail"
-		load_factor = 10
-		track = yes
-	}
-
-	preacct {
-		preprocess
-	}
-
-	accounting {
-		#  fail = 1 overrides the default action for a failed sql
-		#  (return), which would exit the section before the check
-		#  below ever runs.
-		sql {
-			fail = 1
-		}
-
-		#  Accounting-On/Off makes sql run a bulk close-all-sessions
-		#  query for the NAS. If that one query fails, the reader
-		#  retries the record forever and jams every record queued
-		#  behind it, so acknowledge and drop just these two types.
-		#  Session records keep retrying until SQL accepts them -
-		#  that is the point of the buffer.
-		if (fail) {
-			if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
-				ok
-			}
-		}
-	}
-}
-EOF
-ln -sf "${FREERADIUS_CONF_DIR}/sites-available/buffered-sql" "${FREERADIUS_CONF_DIR}/sites-enabled/buffered-sql" || handle_error "Failed to enable buffered-sql site"
-COMPLETED_STEPS+=("FreeRADIUS buffered-sql site enabled")
-
-# Configure the detail module as a single-file writer that buffered-sql can
-# consume (the stock module writes per-NAS/per-day files the reader ignores).
-log_step "Configuring FreeRADIUS detail module"
-cat > "${FREERADIUS_CONF_DIR}/mods-available/detail" << 'EOF'
-detail {
-	filename = ${radacctdir}/detail
-	header = "%t"
-	permissions = 0600
-	locking = yes
-}
-EOF
-ln -sf "${FREERADIUS_CONF_DIR}/mods-available/detail" "${FREERADIUS_CONF_DIR}/mods-enabled/detail" || handle_error "Failed to enable detail module"
-COMPLETED_STEPS+=("FreeRADIUS detail module configured")
+# NOTE: buffered accounting (detail -> buffered-sql) was retired
+# 2026-07-23; accounting now goes straight to sql in the default site.
 
 # Enable SQL module for FreeRADIUS
 log_step "Enabling SQL module"
@@ -1056,28 +1002,20 @@ fi
 if [ -f "$DEFAULT_SITE_AVAIL" ]; then
     sed -i 's/-sql/sql/g' "$DEFAULT_SITE_AVAIL" || handle_error "Failed to update -sql to sql"
     log_step "Replacing accounting section in FreeRADIUS default site"
-    # Session records queue to the local detail file only; the buffered-sql
-    # virtual server replays them into SQL (survives DB stalls/restarts).
-    # Accounting-On/Off go to sql synchronously instead: NAS-reboot records
-    # crash the detail reader thread and freeze the queue, so they must
-    # never enter it.
+    # Accounting goes straight to sql. Buffered accounting (detail ->
+    # buffered-sql) was retired 2026-07-23: the detail reader thread dies
+    # silently on NAS-reboot records, and with 1-minute cumulative
+    # interims direct sql self-heals within a minute of any DB blip.
     cat << 'EOF' > /tmp/new_accounting_block
 accounting {
-if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
-sql {
-fail = 1
-}
-ok
-}
-else {
-detail
-}
+sql
 exec
 attr_filter.accounting_response
 }
 EOF
-    # Brace-counting skip (comments stripped): the replaced section can be
-    # the nested block above on re-runs, where "end at first }" corrupts it.
+    # Brace-counting skip (comments stripped): the replaced section may be
+    # the nested block older buffered builds generated, where "end at
+    # first }" corrupts it.
     awk '
     BEGIN { skip = 0; depth = 0 }
     /^accounting[ \t]*{/ { print_file("/tmp/new_accounting_block"); skip = 1; depth = 1; next }

@@ -55,6 +55,15 @@
 #   synchronously for On/Off (fail-tolerant, always acked) and queues
 #   only session records to detail. Both site rewriters are now
 #   brace-aware so regenerating the nested section stays idempotent.
+#
+# v3.5 (2026-07-23): buffered accounting RETIRED - back to direct sql
+#   accounting in the default site. Auth already requires the DB
+#   synchronously (a DB outage stops logins regardless), 1-minute
+#   cumulative interims rebuild counters within a minute of any DB
+#   blip, and the buffer's real-world failure mode (reader thread dying
+#   on NAS-reboot records) is silent and needs babysitting. Step 6b now
+#   converges to accounting { sql } and disables the buffered-sql site
+#   + detail module links; Step 6d removes the watchdog it installed.
 # ---------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -726,83 +735,32 @@ fi
 log ""
 
 # ----------------------------------------------------------------------
-# Step 6b: Ensure buffered accounting wiring (detail -> buffered-sql).
-# The default site writes accounting to a local detail file and the
-# buffered-sql virtual server replays it into SQL, so records survive
-# MariaDB stalls/restarts. Mirrors the installers; idempotent, so
-# already-wired servers see no change and no restart.
+# Step 6b: Ensure DIRECT accounting wiring (accounting -> sql).
+# Buffered accounting (detail file -> buffered-sql reader) was retired
+# 2026-07-23: the reader thread dies silently on NAS-reboot records,
+# freezing accounting until someone intervenes. Auth already needs the
+# DB synchronously (a DB outage stops logins regardless), and 1-minute
+# cumulative interims rebuild counters within a minute of a DB blip,
+# so the buffer added a silent failure mode without real protection.
+# Converges the default site to plain sql accounting and disables the
+# buffered-sql site / detail module links. Idempotent: converged
+# servers see no change and no restart.
 # ----------------------------------------------------------------------
 log "========================"
-log " Step 6b: Buffered accounting wiring (detail -> buffered-sql)"
+log " Step 6b: Direct accounting wiring (accounting -> sql)"
 log "------------------------"
 
 if [ -z "${RADIUS_CONF}" ]; then
-  log "[WARN] radiusd.conf not found; skipping buffered accounting wiring."
+  log "[WARN] radiusd.conf not found; skipping accounting wiring."
 else
   RAD_ROOT="$(dirname "${RADIUS_CONF}")"
   BUFSQL_CHANGED=0
-  BUFSQL_TOUCHED=()   # files backed up this run, restored on failed validation
-  BUFSQL_NEW_LINKS=() # symlinks created this run, removed on failed validation
-
-  # Desired detail module: a single-file writer buffered-sql can consume
-  # (stock writes per-NAS/per-day files the reader ignores).
-  DETAIL_MOD="${RAD_ROOT}/mods-available/detail"
-  DETAIL_TMP="${DETAIL_MOD}.new"
-  cat > "${DETAIL_TMP}" << 'EOF'
-detail {
-	filename = ${radacctdir}/detail
-	header = "%t"
-	permissions = 0600
-	locking = yes
-}
-EOF
-
-  # Desired buffered-sql site: tail the detail file, replay into SQL.
-  BUFSQL_SITE="${RAD_ROOT}/sites-available/buffered-sql"
-  BUFSQL_TMP="${BUFSQL_SITE}.new"
-  cat > "${BUFSQL_TMP}" << 'EOF'
-server buffered-sql {
-	listen {
-		type = detail
-		filename = "${radacctdir}/detail"
-		load_factor = 10
-		track = yes
-	}
-
-	preacct {
-		preprocess
-	}
-
-	accounting {
-		#  fail = 1 overrides the default action for a failed sql
-		#  (return), which would exit the section before the check
-		#  below ever runs.
-		sql {
-			fail = 1
-		}
-
-		#  Accounting-On/Off makes sql run a bulk close-all-sessions
-		#  query for the NAS. If that one query fails, the reader
-		#  retries the record forever and jams every record queued
-		#  behind it, so acknowledge and drop just these two types.
-		#  Session records keep retrying until SQL accepts them -
-		#  that is the point of the buffer.
-		if (fail) {
-			if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {
-				ok
-			}
-		}
-	}
-}
-EOF
+  BUFSQL_TOUCHED=()        # files backed up this run, restored on failed validation
+  BUFSQL_NEW_LINKS=()      # symlinks created this run, removed on failed validation
+  BUFSQL_REMOVED_LINKS=()  # "link:target" removed this run, re-created on failed validation
 
   # Desired default site, matching the installers exactly: -sql refs
-  # enabled and the accounting section queueing session records to detail
-  # only (SQL happens in buffered-sql) - EXCEPT Accounting-On/Off, which
-  # are handled synchronously via sql. NAS-reboot records crash the
-  # detail reader thread (frozen detail.work, idle SQL connections,
-  # "Reader thread exited without informing the master" on the next
-  # stop), so they must never enter the buffered queue.
+  # enabled and the accounting section writing straight to sql.
   # Generated from the currently EFFECTIVE config -
   # sites-enabled/default if present (older installers left an edited
   # regular file there), else sites-available/default. Regeneration is
@@ -821,21 +779,13 @@ EOF
   if [ -n "${RAD_DEFAULT_SRC}" ]; then
     RAD_DEFAULT_TMP="${RAD_DEFAULT_AVAIL}.new"
     # The skip logic counts braces (comments stripped) because the
-    # generated section is nested; ending at the first "}" would leave
-    # fragments of the old section behind on re-runs.
+    # section being replaced may be the nested block earlier versions
+    # generated; ending at the first "}" would leave fragments behind.
     sed 's/-sql/sql/g' "${RAD_DEFAULT_SRC}" | awk '
     BEGIN { skip = 0; depth = 0 }
     /^accounting[ \t]*{/ {
       print "accounting {"
-      print "if (&Acct-Status-Type == Accounting-On || &Acct-Status-Type == Accounting-Off) {"
-      print "sql {"
-      print "fail = 1"
-      print "}"
-      print "ok"
-      print "}"
-      print "else {"
-      print "detail"
-      print "}"
+      print "sql"
       print "exec"
       print "attr_filter.accounting_response"
       print "}"
@@ -874,8 +824,6 @@ EOF
     return 0
   }
 
-  if bufsql_install_if_changed "${DETAIL_MOD}" "${DETAIL_TMP}"; then BUFSQL_CHANGED=1; fi
-  if bufsql_install_if_changed "${BUFSQL_SITE}" "${BUFSQL_TMP}"; then BUFSQL_CHANGED=1; fi
   if [ -n "${RAD_DEFAULT_TMP}" ]; then
     if bufsql_install_if_changed "${RAD_DEFAULT_AVAIL}" "${RAD_DEFAULT_TMP}"; then BUFSQL_CHANGED=1; fi
     # Normalize sites-enabled/default back to the packaged symlink layout:
@@ -900,44 +848,48 @@ EOF
     fi
   fi
 
-  # Enable the detail module and buffered-sql site if not already enabled.
-  for pair in "mods-available/detail:mods-enabled/detail" "sites-available/buffered-sql:sites-enabled/buffered-sql"; do
-    BUFSQL_SRC="${RAD_ROOT}/${pair%%:*}"
-    BUFSQL_DST="${RAD_ROOT}/${pair##*:}"
-    if [ ! -e "${BUFSQL_DST}" ]; then
+  # Disable the buffered-sql site and detail module if still enabled.
+  # sites-available/buffered-sql and mods-available/detail are left in
+  # place (inert without their links) for reference and easy rollback.
+  for name in "sites-enabled/buffered-sql" "mods-enabled/detail"; do
+    BUFSQL_DST="${RAD_ROOT}/${name}"
+    if [ -e "${BUFSQL_DST}" ] || [ -L "${BUFSQL_DST}" ]; then
       if [ "$DRY_RUN" -eq 0 ]; then
-        ln -sf "${BUFSQL_SRC}" "${BUFSQL_DST}"
-        BUFSQL_NEW_LINKS+=("${BUFSQL_DST}")
-        log "[OK] enabled ${BUFSQL_DST}"
+        if [ -L "${BUFSQL_DST}" ]; then
+          BUFSQL_REMOVED_LINKS+=("${BUFSQL_DST}:$(readlink "${BUFSQL_DST}")")
+          rm -f "${BUFSQL_DST}"
+        else
+          # Older installs sometimes left a regular file here.
+          cp -a "${BUFSQL_DST}" "${BUFSQL_DST}.bak.${TIMESTAMP}"
+          prune_baks "${BUFSQL_DST}"
+          BUFSQL_TOUCHED+=("${BUFSQL_DST}")
+          rm -f "${BUFSQL_DST}"
+        fi
+        log "[OK] disabled ${BUFSQL_DST}"
       else
-        log "[DRY] would enable ${BUFSQL_DST}"
+        log "[DRY] would disable ${BUFSQL_DST}"
       fi
       BUFSQL_CHANGED=1
     fi
   done
 
   if [ "${BUFSQL_CHANGED}" -eq 0 ]; then
-    log "[OK] buffered accounting already wired; no change, no restart"
+    log "[OK] direct accounting already wired; no change, no restart"
   elif [ "$DRY_RUN" -eq 0 ]; then
-    # Queue directory must exist before validation/first write.
-    mkdir -p /var/log/freeradius/radacct 2>/dev/null || true
-    if id freerad >/dev/null 2>&1; then
-      chown freerad:freerad /var/log/freeradius/radacct 2>/dev/null || true
-    fi
-
     # Validate BEFORE the restart at the end of the run; roll everything
     # back on failure so a broken config never reaches the service.
     RAD_BIN="$(command -v freeradius || command -v radiusd || true)"
     if [ -n "${RAD_BIN}" ] && ! "${RAD_BIN}" -XC >/dev/null 2>&1; then
-      log "[ERROR] buffered accounting config FAILED validation (${RAD_BIN} -XC); rolling back"
+      log "[ERROR] direct accounting config FAILED validation (${RAD_BIN} -XC); rolling back"
       for f in "${BUFSQL_TOUCHED[@]}"; do
         # rm first: if the live path became a symlink this run, cp -a onto
         # it would write through the link instead of replacing it.
         if [ -f "${f}.bak.${TIMESTAMP}" ]; then rm -f "${f}"; cp -a "${f}.bak.${TIMESTAMP}" "${f}"; fi
       done
       for l in "${BUFSQL_NEW_LINKS[@]}"; do rm -f "${l}" || true; done
+      for l in "${BUFSQL_REMOVED_LINKS[@]}"; do ln -sf "${l#*:}" "${l%%:*}" || true; done
     else
-      log "[OK] buffered accounting wiring applied and validated"
+      log "[OK] direct accounting wiring applied and validated"
       RADIUS_CHANGED=1  # reuse the existing end-of-run FreeRADIUS restart
     fi
   else
@@ -1009,106 +961,30 @@ fi
 log ""
 
 # ----------------------------------------------------------------------
-# Step 6d: radacct watchdog (auto-unjam a stalled detail reader).
-# A healthy buffered-sql reader either has no detail.work (idle: the
-# file is deleted once fully replayed) or keeps touching it as it marks
-# processed entries (track = yes). A detail.work mtime frozen while
-# FreeRADIUS is up means the reader is wedged (a record SQL keeps
-# rejecting, or an unclean shutdown) and accounting silently stops
-# reaching the panel. The watchdog applies the manual fix: stop, set
-# the work file aside for post-mortem, start. Loss is bounded to that
-# file - open sessions are rebuilt by their next interim update.
-# Idempotent.
+# Step 6d: Remove the radacct watchdog (retired with buffered-sql).
+# Direct sql accounting has no detail.work to unjam, so drop the cron
+# entry and helper script from servers that received them. The log at
+# /var/log/radacct-watchdog.log and any detail.work.stuck.* post-mortem
+# files are left in place as history. Idempotent.
 # ----------------------------------------------------------------------
 log "========================"
-log " Step 6d: radacct watchdog (auto-unjam stalled detail reader)"
+log " Step 6d: Remove radacct watchdog (obsolete with direct accounting)"
 log "------------------------"
 
-if [ -z "${RADIUS_CONF}" ]; then
-  log "[WARN] radiusd.conf not found; skipping radacct watchdog."
-else
-  WATCHDOG_BIN="/usr/local/sbin/radacct-watchdog.sh"
-  WATCHDOG_CRON="/etc/cron.d/radacct-watchdog"
-  WATCHDOG_CHANGED=0
-
-  WATCHDOG_TMP="${WATCHDOG_BIN}.new"
-  cat > "${WATCHDOG_TMP}" << 'WDOG'
-#!/bin/bash
-# Installed by universal.sh (Step 6d). Unjams the FreeRADIUS
-# buffered-sql detail reader: a detail.work whose mtime is frozen for
-# STALE_MIN minutes while the service is up means the reader is wedged
-# and no accounting is reaching SQL. Stop, set the work file aside
-# (kept for post-mortem), start; the reader resumes on a fresh queue
-# and open sessions reappear on their next interim update.
-set -u
-
-WORK="/var/log/freeradius/radacct/detail.work"
-WLOG="/var/log/radacct-watchdog.log"
-STALE_MIN=5
-
-exec 9>"/var/lock/radacct-watchdog.lock"
-flock -n 9 || exit 0
-
-SVC=""
-for s in freeradius radiusd; do
-  if systemctl is-active --quiet "$s" 2>/dev/null; then SVC="$s"; break; fi
-done
-[ -n "$SVC" ] || exit 0   # service stopped on purpose is not a jam
-[ -f "$WORK" ] || exit 0  # no work file: reader idle and healthy
-
-# find prints the path only when mtime is older than the cutoff
-find "$WORK" -mmin "+${STALE_MIN}" 2>/dev/null | grep -q . || exit 0
-
-# Only unjam while MariaDB answers: a frozen reader during a DB outage
-# is the buffer doing its job (records replay once the DB returns), and
-# setting the work file aside then would discard them for nothing.
-if command -v mysqladmin >/dev/null 2>&1; then
-  mysqladmin --connect-timeout=5 ping >/dev/null 2>&1 || exit 0
-fi
-
-TS="$(date +%Y%m%d_%H%M%S)"
-echo "[$(date '+%F %T')] detail.work frozen >${STALE_MIN}m; unjamming (kept: ${WORK}.stuck.${TS})" >> "$WLOG"
-systemctl stop "$SVC"
-mv "$WORK" "${WORK}.stuck.${TS}"
-systemctl start "$SVC"
-echo "[$(date '+%F %T')] ${SVC} restarted; reader resumed on a fresh queue" >> "$WLOG"
-
-# keep a week of post-mortem files
-find "$(dirname "$WORK")" -maxdepth 1 -name 'detail.work.stuck.*' -mtime +7 -delete 2>/dev/null || true
-WDOG
-
-  WATCHDOG_CRON_TMP="${WATCHDOG_CRON}.new"
-  cat > "${WATCHDOG_CRON_TMP}" << 'EOF'
-# Installed by universal.sh (Step 6d): auto-unjam a stalled buffered-sql reader.
-* * * * * root /usr/local/sbin/radacct-watchdog.sh
-EOF
-
-  watchdog_install_if_changed() {
-    # $1 = live file, $2 = desired temp file, $3 = mode. Returns 0 if a
-    # change was made (or would be, under --dry-run), 1 if up to date.
-    local live="$1" tmp="$2" mode="$3"
-    if [ -f "${live}" ] && cmp -s "${live}" "${tmp}"; then
-      rm -f "${tmp}" || true
-      chmod "${mode}" "${live}" 2>/dev/null || true
-      return 1
-    fi
+WATCHDOG_REMOVED=0
+for f in /etc/cron.d/radacct-watchdog /usr/local/sbin/radacct-watchdog.sh; do
+  if [ -e "$f" ]; then
     if [ "$DRY_RUN" -eq 0 ]; then
-      mv -f "${tmp}" "${live}"
-      chmod "${mode}" "${live}"
-      log "[OK] installed ${live}"
+      rm -f "$f"
+      log "[OK] removed $f"
     else
-      rm -f "${tmp}" || true
-      log "[DRY] would install ${live}"
+      log "[DRY] would remove $f"
     fi
-    return 0
-  }
-
-  if watchdog_install_if_changed "${WATCHDOG_BIN}" "${WATCHDOG_TMP}" 0755; then WATCHDOG_CHANGED=1; fi
-  if watchdog_install_if_changed "${WATCHDOG_CRON}" "${WATCHDOG_CRON_TMP}" 0644; then WATCHDOG_CHANGED=1; fi
-
-  if [ "${WATCHDOG_CHANGED}" -eq 0 ]; then
-    log "[OK] radacct watchdog already installed; no change"
+    WATCHDOG_REMOVED=1
   fi
+done
+if [ "${WATCHDOG_REMOVED}" -eq 0 ]; then
+  log "[OK] radacct watchdog not present; nothing to remove"
 fi
 
 log ""
