@@ -67,7 +67,13 @@ ovpn_fix.sh [--dry-run] [--no-restart]
 Opens a SimpleISP server up for a migration pull: a read-only MariaDB user on the `radius` database reachable from outside, and root SSH by public key while password login stays available for everyone else. Run on the **source** (SimpleISP) server as root:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh)
+curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh -o /tmp/aisp.sh && sudo bash /tmp/aisp.sh
+```
+
+Already root? Process substitution works too, and skips the temp file:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh)
 ```
 
 Four steps, each backing up what it touches:
@@ -91,10 +97,13 @@ Overrides via environment:
 | `CREDS_FILE` | `/root/aisp.txt` | Where credentials are written |
 
 ```bash
-sudo ALLOW_CIDR=203.0.113.10/32 bash <(curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh)
+sudo ALLOW_CIDR=203.0.113.10/32 bash /tmp/aisp.sh
 ```
 
-Use process substitution (`bash <(curl ...)`) rather than `curl ... | sudo bash` — the script prompts on the missing-root-key check, and in a pipe that `read` consumes the script itself instead of your answer.
+Two things to avoid when running it straight off GitHub:
+
+- **`curl ... | sudo bash`** — the script prompts on the missing-root-key check, and in a pipe that `read` consumes the script itself instead of your answer.
+- **`sudo bash <(curl ...)`** — `sudo` closes every file descriptor above 2 before exec, so the process-substitution FD is gone and bash fails with `/dev/fd/63: No such file or directory`. Process substitution is fine *without* `sudo` (already root), or wrapped as `sudo bash -c 'bash <(curl -fsSL ...)'` so the FD is created inside the privileged shell.
 
 Tear down once the migration is complete. Leaving 3306 open to the internet with a plaintext password on disk is the wide-open state this script deliberately creates, and it should not outlive the migration:
 
