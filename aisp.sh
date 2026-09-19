@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# migration-prep.sh
+# aisp.sh
 # Prepares a host for SimpleISP -> AISP migration:
 #   1. SSH: root login by public key only, password login allowed for other users
 #   2. MariaDB: bind on 0.0.0.0
@@ -8,9 +8,11 @@
 #   4. UFW: open 3306/tcp
 #
 # Usage:
-#   sudo ./migration-prep.sh
-#   sudo DB_USER=aisp_ro DB_PASS='somepassword' ./migration-prep.sh
-#   sudo ALLOW_CIDR=203.0.113.10/32 ./migration-prep.sh   # narrow the firewall rule
+#   sudo ./aisp.sh
+#   sudo DB_USER=aisp_ro DB_PASS='somepassword' ./aisp.sh
+#   sudo ALLOW_CIDR=203.0.113.10/32 ./aisp.sh   # narrow the firewall rule
+#
+# Credentials are written to /root/aisp.txt (mode 600); override with CREDS_FILE=.
 #
 set -euo pipefail
 
@@ -22,6 +24,7 @@ DB_USER="${DB_USER:-aisp_ro}"
 DB_PASS="${DB_PASS:-}"
 DB_PORT="${DB_PORT:-3306}"
 ALLOW_CIDR="${ALLOW_CIDR:-any}"
+CREDS_FILE="${CREDS_FILE:-/root/aisp.txt}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 # ----------------------------
 
@@ -50,7 +53,7 @@ if [[ ! -s /root/.ssh/authorized_keys ]]; then
 fi
 
 cat > "$SSHD_CONF" <<'EOF'
-# Managed by migration-prep.sh
+# Managed by aisp.sh
 # Root: key-based login only (no password).
 PermitRootLogin prohibit-password
 
@@ -104,6 +107,8 @@ log "Creating read-only user '${DB_USER}'@'%' on \`${DB_NAME}\`"
 if [[ -z "$DB_PASS" ]]; then
   DB_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 28)"
   GENERATED=1
+elif [[ "$DB_PASS" =~ [\'\\\"\`] ]]; then
+  die "DB_PASS must not contain quotes or backslashes (it is interpolated into SQL)."
 fi
 
 mysql <<SQL
@@ -114,6 +119,34 @@ FLUSH PRIVILEGES;
 SQL
 
 mysql -e "SHOW GRANTS FOR '${DB_USER}'@'%';" | sed 's/^/      /'
+
+# ---------- 3b. Record credentials ----------
+log "Writing credentials to ${CREDS_FILE}"
+
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+: "${HOST_IP:=<this-host>}"
+
+# Fresh file per run, root-only
+install -m 600 /dev/null "$CREDS_FILE"
+cat > "$CREDS_FILE" <<EOF
+# AISP migration — read-only database access
+# Written by aisp.sh on $(date '+%Y-%m-%d %H:%M:%S %Z')
+
+DB_HOST=${HOST_IP}
+DB_PORT=${DB_PORT}
+DB_NAME=${DB_NAME}
+DB_USER=${DB_USER}
+DB_PASS=${DB_PASS}
+
+# Grants: SELECT, SHOW VIEW on ${DB_NAME}.* from '%'
+# Connect:
+#   mysql -h ${HOST_IP} -P ${DB_PORT} -u ${DB_USER} -p ${DB_NAME}
+#
+# Revoke when the migration is done:
+#   mysql -e "DROP USER '${DB_USER}'@'%';"
+EOF
+chmod 600 "$CREDS_FILE"
+ls -l "$CREDS_FILE" | sed 's/^/      /'
 
 # ---------- 4. UFW ----------
 if command -v ufw >/dev/null 2>&1; then
@@ -135,11 +168,12 @@ cat <<EOF
 
   Connect from the AISP side with:
 
-    mysql -h <this-host> -P ${DB_PORT} -u ${DB_USER} -p ${DB_NAME}
+    mysql -h ${HOST_IP} -P ${DB_PORT} -u ${DB_USER} -p ${DB_NAME}
 
   User:     ${DB_USER}
-  Password: ${DB_PASS}$( [[ -n "${GENERATED:-}" ]] && echo "   <-- generated, save it now" )
+  Password: ${DB_PASS}$( [[ -n "${GENERATED:-}" ]] && echo "   <-- generated" )
   Grants:   SELECT, SHOW VIEW on ${DB_NAME}.* from any host
+  Saved to: ${CREDS_FILE} (mode 600)
 
   Backups:  ${SSHD_CONF}.bak-${STAMP}
             ${MY_CONF}.bak-${STAMP}

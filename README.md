@@ -60,6 +60,50 @@ Debian/Ubuntu php-fpm units ship with `ProtectSystem=full`, which makes `/etc` r
 ovpn_fix.sh [--dry-run] [--no-restart]
 ```
 
+## Migration
+
+### `aisp.sh` — SimpleISP → AISP migration prep
+
+Opens a SimpleISP server up for a migration pull: a read-only MariaDB user on the `radius` database reachable from outside, and root SSH by public key while password login stays available for everyone else. Run on the **source** (SimpleISP) server as root:
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh)
+```
+
+Four steps, each backing up what it touches:
+
+- **SSH** — rewrites `/etc/ssh/sshd_config.d/60-cloudimg-settings.conf` to `PermitRootLogin prohibit-password` + `PasswordAuthentication yes`, so root is key-only and other accounts keep password login. Aborts if `/root/.ssh/authorized_keys` is empty (you would lock yourself out), validates with `sshd -t` before reloading, and warns if another drop-in or the main config also sets those keywords — sshd honours the **first** occurrence it reads, so an earlier-sorting file silently wins.
+- **MariaDB** — sets `bind-address = 0.0.0.0` in `/etc/mysql/mariadb.conf.d/50-server.cnf` (handles a commented-out line), comments out `skip-networking`, restarts.
+- **Database user** — `aisp_ro`@`%` with `SELECT, SHOW VIEW` on `radius`. Credentials are written to **`/root/aisp.txt`** (mode 600) as `KEY=value` lines, so the migration tooling can `source` it directly.
+- **UFW** — allows `3306/tcp`.
+
+Both edited configs are backed up alongside the originals as `.bak-<timestamp>`, and the run ends by printing the connection string and the teardown commands.
+
+Overrides via environment:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DB_NAME` | `radius` | Database to grant read access on |
+| `DB_USER` | `aisp_ro` | User to create |
+| `DB_PASS` | *generated* | 28-char random if unset; must not contain quotes or backslashes |
+| `DB_PORT` | `3306` | Port to open and record |
+| `ALLOW_CIDR` | `any` | Restrict the UFW rule to a single source |
+| `CREDS_FILE` | `/root/aisp.txt` | Where credentials are written |
+
+```bash
+sudo ALLOW_CIDR=203.0.113.10/32 bash <(curl -fsSL https://raw.githubusercontent.com/mymanga/bash/main/aisp.sh)
+```
+
+Use process substitution (`bash <(curl ...)`) rather than `curl ... | sudo bash` — the script prompts on the missing-root-key check, and in a pipe that `read` consumes the script itself instead of your answer.
+
+Tear down once the migration is complete. Leaving 3306 open to the internet with a plaintext password on disk is the wide-open state this script deliberately creates, and it should not outlive the migration:
+
+```bash
+ufw status numbered && ufw delete <num>
+mysql -e "DROP USER 'aisp_ro'@'%';"
+shred -u /root/aisp.txt
+```
+
 ## Scheduled jobs (installed to root's crontab)
 
 | Schedule | Job |
